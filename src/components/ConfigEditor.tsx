@@ -12,6 +12,7 @@ import {
   Badge
 } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps, SelectableValue } from '@grafana/data';
+import { getBackendSrv } from '@grafana/runtime';
 import { MCPDataSourceOptions, MCPSecureJsonData, TestConnectionResult } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<MCPDataSourceOptions, MCPSecureJsonData> {}
@@ -246,28 +247,55 @@ export function ConfigEditor(props: Props) {
     setTestResult(null);
 
     try {
-      // In a real implementation, this would call the backend health check endpoint
-      // For now, we'll simulate the test
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Create a test payload with current configuration
+      const testPayload = {
+        datasource: {
+          ...options,
+          jsonData,
+          secureJsonData,
+        },
+      };
+
+      // Call the backend health check endpoint directly
+      const healthResponse = await getBackendSrv().post(
+        `/api/datasources/${options.id}/health`,
+        testPayload
+      );
       
-      // Mock successful connection test
-      setTestResult({
-        success: true,
-        message: 'Successfully connected to MCP server',
-        serverInfo: {
-          name: 'Example MCP Server',
-          version: '1.0.0',
-        },
-        capabilities: {
-          tools: { listChanged: false },
-          resources: { subscribe: true, listChanged: false },
-        },
-        toolCount: 5,
-      });
-    } catch (error) {
+      if (healthResponse?.status === 'OK') {
+        // Try to get additional info from backend about the MCP server
+        try {
+          const toolsResponse = await getBackendSrv().get(
+            `/api/datasources/${options.id}/resources/tools`
+          );
+          const serverResponse = await getBackendSrv().get(
+            `/api/datasources/${options.id}/resources/servers`
+          );
+          
+          setTestResult({
+            success: true,
+            message: healthResponse.message || 'Successfully connected to MCP server',
+            serverInfo: serverResponse?.serverInfo,
+            capabilities: serverResponse?.capabilities,
+            toolCount: Array.isArray(toolsResponse) ? toolsResponse.length : undefined,
+          });
+        } catch {
+          // If we can't get detailed info, just show basic success
+          setTestResult({
+            success: true,
+            message: healthResponse.message || 'Successfully connected to MCP server',
+          });
+        }
+      } else {
+        setTestResult({
+          success: false,
+          message: healthResponse?.message || 'Connection test failed',
+        });
+      }
+    } catch (error: any) {
       setTestResult({
         success: false,
-        message: `Connection failed: ${error}`,
+        message: `Connection failed: ${error.message || error}`,
       });
     } finally {
       setIsTestingConnection(false);

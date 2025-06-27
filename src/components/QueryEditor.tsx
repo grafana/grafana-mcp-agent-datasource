@@ -150,7 +150,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       {/* Main Query Section */}
       <Card>
         <Card.Heading>Natural Language Query</Card.Heading>
-        <Card.Body>
           <Stack direction="column" gap={2}>
             <InlineField 
               label="Query" 
@@ -220,41 +219,38 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
               </Button>
             </HorizontalGroup>
           </Stack>
-        </Card.Body>
       </Card>
 
       {/* Query Templates */}
       {showTemplates && (
         <Card>
           <Card.Heading>Query Templates</Card.Heading>
-          <Card.Body>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '12px' }}>
-              {DEFAULT_QUERY_TEMPLATES.map((template, index) => (
-                <div 
-                  key={index}
-                  style={{ 
-                    border: '1px solid #e1e5e9', 
-                    borderRadius: '4px', 
-                    padding: '12px',
-                    cursor: 'pointer',
-                    backgroundColor: '#f7f8fa'
-                  }}
-                  onClick={() => onTemplateSelect(template)}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
-                    <strong>{template.name}</strong>
-                    {template.category && <Badge text={template.category} color="blue" />}
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#6c7680', marginBottom: '8px' }}>
-                    {template.description}
-                  </div>
-                  <div style={{ fontFamily: 'monospace', fontSize: '11px', color: '#2e3338' }}>
-                    {template.query}
-                  </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '12px' }}>
+            {DEFAULT_QUERY_TEMPLATES.map((template, index) => (
+              <div 
+                key={index}
+                style={{ 
+                  border: '1px solid #e1e5e9', 
+                  borderRadius: '4px', 
+                  padding: '12px',
+                  cursor: 'pointer',
+                  backgroundColor: '#f7f8fa'
+                }}
+                onClick={() => onTemplateSelect(template)}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                  <strong>{template.name}</strong>
+                  {template.category && <Badge text={template.category} color="blue" />}
                 </div>
-              ))}
-            </div>
-          </Card.Body>
+                <div style={{ fontSize: '12px', color: '#6c7680', marginBottom: '8px' }}>
+                  {template.description}
+                </div>
+                <div style={{ fontFamily: 'monospace', fontSize: '11px', color: '#2e3338' }}>
+                  {template.query}
+                </div>
+              </div>
+            ))}
+          </div>
         </Card>
       )}
 
@@ -262,50 +258,48 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       {showAdvanced && (
         <Card>
           <Card.Heading>Advanced Options</Card.Heading>
-          <Card.Body>
-            <HorizontalGroup spacing="md">
-              <InlineField 
-                label="Max Results" 
-                labelWidth={16}
-                tooltip="Maximum number of results to return"
-              >
-                <Input
-                  id="query-editor-max-results"
-                  type="number"
-                  onChange={onMaxResultsChange}
-                  value={currentQuery.maxResults}
-                  placeholder="100"
-                  width={15}
-                  min={1}
-                  max={10000}
-                />
-              </InlineField>
+          <HorizontalGroup spacing="md">
+            <InlineField 
+              label="Max Results" 
+              labelWidth={16}
+              tooltip="Maximum number of results to return"
+            >
+              <Input
+                id="query-editor-max-results"
+                type="number"
+                onChange={onMaxResultsChange}
+                value={currentQuery.maxResults}
+                placeholder="100"
+                width={15}
+                min={1}
+                max={10000}
+              />
+            </InlineField>
 
-              <InlineField 
-                label="Format" 
-                labelWidth={16}
-                tooltip="Preferred output format"
-              >
-                <Select
-                  options={formatOptions}
-                  value={currentQuery.format}
-                  onChange={onFormatChange}
-                  width={20}
-                />
-              </InlineField>
-            </HorizontalGroup>
+            <InlineField 
+              label="Format" 
+              labelWidth={16}
+              tooltip="Preferred output format"
+            >
+              <Select
+                options={formatOptions}
+                value={currentQuery.format}
+                onChange={onFormatChange}
+                width={20}
+              />
+            </InlineField>
+          </HorizontalGroup>
 
-            {currentQuery.toolName && (
-              <Alert title="Tool Selected" severity="info">
-                <p>
-                  Using tool: <Badge text={currentQuery.toolName} color="blue" />
-                </p>
-                <p>
-                  {availableTools.find(t => t.name === currentQuery.toolName)?.description}
-                </p>
-              </Alert>
-            )}
-          </Card.Body>
+          {currentQuery.toolName && (
+            <Alert title="Tool Selected" severity="info">
+              <p>
+                Using tool: <Badge text={currentQuery.toolName} color="blue" />
+              </p>
+              <p>
+                {availableTools.find(t => t.name === currentQuery.toolName)?.description}
+              </p>
+            </Alert>
+          )}
         </Card>
       )}
 

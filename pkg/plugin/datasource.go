@@ -31,32 +31,41 @@ var (
 
 // NewDatasource creates a new datasource instance.
 func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
-	log.DefaultLogger.Info("Creating new MCP datasource instance")
+	log.DefaultLogger.Info("Creating new MCP datasource instance",
+		"uid", settings.UID,
+		"id", settings.ID,
+		"name", settings.Name,
+		"url", settings.URL)
 
 	var config models.MCPDataSourceSettings
 	if err := json.Unmarshal(settings.JSONData, &config); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal settings: %w", err)
 	}
 
-	// Create MCP client
-	mcpClient, err := createMCPClient(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create MCP client: %w", err)
-	}
+	log.DefaultLogger.Info("Parsed MCP config",
+		"serverURL", config.ServerURL,
+		"transport", config.Transport,
+		"timeout", config.ConnectionTimeout)
 
 	return &Datasource{
-		settings:  config,
-		mcpClient: mcpClient,
-		logger:    log.DefaultLogger,
+		settings:       config,
+		mcpClient:      nil, // Lazy initialization
+		logger:         log.DefaultLogger,
+		datasourceUID:  settings.UID,
+		datasourceID:   settings.ID,
+		datasourceName: settings.Name,
 	}, nil
 }
 
 // Datasource is an example datasource which can respond to data queries, reports
 // its health and has streaming skills.
 type Datasource struct {
-	settings  models.MCPDataSourceSettings
-	mcpClient *client.Client
-	logger    log.Logger
+	settings       models.MCPDataSourceSettings
+	mcpClient      *client.Client
+	logger         log.Logger
+	datasourceUID  string
+	datasourceID   int64
+	datasourceName string
 }
 
 func createMCPClient(config models.MCPDataSourceSettings) (*client.Client, error) {
@@ -96,38 +105,85 @@ func createMCPClient(config models.MCPDataSourceSettings) (*client.Client, error
 		return nil, fmt.Errorf("unsupported URL scheme: %s (supported: http, https, ws, wss)", serverURL.Scheme)
 	}
 
-	// Start the client connection
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.ConnectionTimeout)*time.Second)
-	defer cancel()
+	// Use a reasonable timeout for connection and initialization
+	connectionTimeout := config.ConnectionTimeout
+	if connectionTimeout <= 0 {
+		connectionTimeout = 30 // Default to 30 seconds
+	}
 
-	if err := mcpClient.Start(ctx); err != nil {
+	log.DefaultLogger.Info("Starting MCP client", "url", config.ServerURL, "timeout", connectionTimeout)
+
+	// For SSE clients, use a context that doesn't get cancelled to maintain the persistent connection
+	// The SSE client needs a long-lived context for the stream to stay alive
+	clientCtx := context.Background()
+
+	if err := mcpClient.Start(clientCtx); err != nil {
 		return nil, fmt.Errorf("failed to start MCP client: %w", err)
 	}
 
-	// Initialize the client
-	initRequest := mcp.InitializeRequest{
-		Request: mcp.Request{
-			Method: "initialize",
-		},
-		Params: mcp.InitializeParams{
-			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
-			Capabilities:    mcp.ClientCapabilities{
-				// Add any specific capabilities we need
-			},
-			ClientInfo: mcp.Implementation{
-				Name:    "grafana-mcp-datasource",
-				Version: "1.0.0",
-			},
-		},
-	}
+	log.DefaultLogger.Info("Initializing MCP client")
 
-	_, err = mcpClient.Initialize(ctx, initRequest)
+	// Use the same persistent context for initialization
+	initRequest := mcp.InitializeRequest{}
+	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initRequest.Params.ClientInfo = mcp.Implementation{
+		Name:    "grafana-mcp-datasource",
+		Version: "1.0.0",
+	}
+	initRequest.Params.Capabilities = mcp.ClientCapabilities{}
+
+	log.DefaultLogger.Info("About to call mcpClient.Initialize()")
+
+	initResult, err := mcpClient.Initialize(clientCtx, initRequest)
 	if err != nil {
+		log.DefaultLogger.Error("mcpClient.Initialize() failed", "error", err)
 		mcpClient.Close()
 		return nil, fmt.Errorf("failed to initialize MCP client: %w", err)
 	}
 
+	log.DefaultLogger.Info("mcpClient.Initialize() succeeded", "result", initResult)
+
+	// Test ListTools immediately after initialization to check if the issue is timing-related
+	log.DefaultLogger.Info("Testing ListTools immediately after initialization")
+	testCtx, testCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer testCancel()
+
+	testTools, testErr := mcpClient.ListTools(testCtx, mcp.ListToolsRequest{})
+	if testErr != nil {
+		log.DefaultLogger.Error("Immediate ListTools test failed", "error", testErr)
+	} else {
+		log.DefaultLogger.Info("Immediate ListTools test succeeded", "toolCount", len(testTools.Tools))
+	}
+
+	log.DefaultLogger.Info("MCP client successfully created and initialized")
+
 	return mcpClient, nil
+}
+
+// getMCPClient returns the MCP client, creating it if necessary (lazy initialization)
+func (d *Datasource) getMCPClient() (*client.Client, error) {
+	d.logger.Info("getMCPClient() called", "hasExistingClient", d.mcpClient != nil)
+
+	if d.mcpClient != nil {
+		d.logger.Debug("Reusing existing MCP client")
+		return d.mcpClient, nil
+	}
+
+	d.logger.Info("Creating MCP client for datasource",
+		"uid", d.datasourceUID,
+		"serverURL", d.settings.ServerURL)
+
+	d.logger.Info("About to call createMCPClient()")
+	mcpClient, err := createMCPClient(d.settings)
+	if err != nil {
+		d.logger.Error("createMCPClient() failed", "error", err)
+		return nil, fmt.Errorf("failed to create MCP client: %w", err)
+	}
+
+	d.logger.Info("createMCPClient() succeeded, caching client")
+	d.mcpClient = mcpClient
+	d.logger.Info("MCP client created and cached", "uid", d.datasourceUID)
+	return d.mcpClient, nil
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
@@ -201,8 +257,18 @@ func (d *Datasource) executeNaturalLanguageQuery(ctx context.Context, query mode
 
 	// For now, let's implement a simple approach where we list available tools
 	// and return information about them along with the query
-	tools, err := d.mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
+	mcpClient, err := d.getMCPClient()
 	if err != nil {
+		d.logger.Error("Failed to get MCP client", "error", err)
+		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to get MCP client: %v", err))
+	}
+
+	toolsCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tools, err := mcpClient.ListTools(toolsCtx, mcp.ListToolsRequest{})
+	if err != nil {
+		d.logger.Error("Failed to list tools for natural language query", "query", query.Query, "error", err)
 		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to list tools: %v", err))
 	}
 
@@ -247,8 +313,17 @@ func (d *Datasource) executeToolCall(ctx context.Context, query models.MCPQuery)
 		}
 	}
 
-	// Execute the tool
-	result, err := d.mcpClient.CallTool(ctx, mcp.CallToolRequest{
+	// Execute the tool with timeout using background context
+	mcpClient, err := d.getMCPClient()
+	if err != nil {
+		d.logger.Error("Failed to get MCP client", "error", err)
+		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to get MCP client: %v", err))
+	}
+
+	toolCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := mcpClient.CallTool(toolCtx, mcp.CallToolRequest{
 		Request: mcp.Request{
 			Method: "tools/call",
 		},
@@ -258,6 +333,7 @@ func (d *Datasource) executeToolCall(ctx context.Context, query models.MCPQuery)
 		},
 	})
 	if err != nil {
+		d.logger.Error("Tool execution failed", "tool", query.ToolName, "error", err)
 		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("tool execution failed: %v", err))
 	}
 
@@ -301,8 +377,19 @@ func (d *Datasource) executeToolCall(ctx context.Context, query models.MCPQuery)
 func (d *Datasource) listTools(ctx context.Context) backend.DataResponse {
 	d.logger.Info("Listing available tools")
 
-	tools, err := d.mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
+	mcpClient, err := d.getMCPClient()
 	if err != nil {
+		d.logger.Error("Failed to get MCP client", "error", err)
+		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to get MCP client: %v", err))
+	}
+
+	// Add timeout context for the operation using background context
+	toolsCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tools, err := mcpClient.ListTools(toolsCtx, mcp.ListToolsRequest{})
+	if err != nil {
+		d.logger.Error("ListTools failed", "error", err)
 		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to list tools: %v", err))
 	}
 
@@ -343,36 +430,38 @@ func (d *Datasource) listTools(ctx context.Context) backend.DataResponse {
 // datasource configuration page which allows users to verify that
 // a datasource is working as expected.
 func (d *Datasource) CheckHealth(ctx context.Context, req *backend.CheckHealthRequest) (*backend.CheckHealthResult, error) {
-	d.logger.Info("CheckHealth called")
+	d.logger.Info("CheckHealth called", "uid", d.datasourceUID)
 
-	if d.mcpClient == nil {
+	mcpClient, err := d.getMCPClient()
+	if err != nil {
+		d.logger.Error("Failed to get MCP client", "error", err)
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
-			Message: "MCP client not initialized",
+			Message: fmt.Sprintf("Failed to initialize MCP client: %v", err),
 		}, nil
 	}
 
-	// Test connection by trying to ping the server
-	err := d.mcpClient.Ping(ctx)
-	if err != nil {
-		return &backend.CheckHealthResult{
-			Status:  backend.HealthStatusError,
-			Message: fmt.Sprintf("Failed to ping MCP server: %v", err),
-		}, nil
-	}
+	// Create a fresh timeout context for health check operations
+	// Use background context to avoid inheriting Grafana's shorter timeout
+	healthCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	// Try to list tools to verify functionality
-	_, err = d.mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
+	// Skip Ping() as it might not be supported by the Loki MCP server
+	// Try to list tools directly to verify functionality
+	d.logger.Info("Listing MCP tools to verify connection")
+	tools, err := mcpClient.ListTools(healthCtx, mcp.ListToolsRequest{})
 	if err != nil {
+		d.logger.Error("ListTools failed", "error", err)
 		return &backend.CheckHealthResult{
 			Status:  backend.HealthStatusError,
 			Message: fmt.Sprintf("Failed to list tools: %v", err),
 		}, nil
 	}
 
+	d.logger.Info("Health check successful", "toolCount", len(tools.Tools))
 	return &backend.CheckHealthResult{
 		Status:  backend.HealthStatusOk,
-		Message: "MCP connection is healthy",
+		Message: fmt.Sprintf("MCP connection is healthy - %d tools available", len(tools.Tools)),
 	}, nil
 }
 
@@ -381,6 +470,8 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 	d.logger.Info("CallResource called", "path", req.Path, "method", req.Method)
 
 	switch req.Path {
+	case "health":
+		return d.handleHealthResource(ctx, req, sender)
 	case "tools":
 		return d.handleToolsResource(ctx, req, sender)
 	case "servers":
@@ -394,8 +485,21 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 }
 
 func (d *Datasource) handleToolsResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
-	tools, err := d.mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
+	mcpClient, err := d.getMCPClient()
 	if err != nil {
+		d.logger.Error("Failed to get MCP client", "error", err)
+		return sender.Send(&backend.CallResourceResponse{
+			Status: 500,
+			Body:   []byte(fmt.Sprintf("Failed to get MCP client: %v", err)),
+		})
+	}
+
+	toolsCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	tools, err := mcpClient.ListTools(toolsCtx, mcp.ListToolsRequest{})
+	if err != nil {
+		d.logger.Error("Failed to list tools in resource handler", "error", err)
 		return sender.Send(&backend.CallResourceResponse{
 			Status: 500,
 			Body:   []byte(fmt.Sprintf("Failed to list tools: %v", err)),
@@ -419,12 +523,69 @@ func (d *Datasource) handleToolsResource(ctx context.Context, req *backend.CallR
 	})
 }
 
+func (d *Datasource) handleHealthResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	// Perform health check and return detailed status
+	healthResult, err := d.CheckHealth(ctx, &backend.CheckHealthRequest{})
+	if err != nil {
+		return sender.Send(&backend.CallResourceResponse{
+			Status: 500,
+			Body:   []byte(fmt.Sprintf("Health check failed: %v", err)),
+		})
+	}
+
+	// Convert to a response format expected by frontend
+	response := map[string]interface{}{
+		"status":  "OK",
+		"message": healthResult.Message,
+	}
+
+	if healthResult.Status != backend.HealthStatusOk {
+		response["status"] = "ERROR"
+	}
+
+	// Try to get additional info if healthy
+	if healthResult.Status == backend.HealthStatusOk {
+		if mcpClient, err := d.getMCPClient(); err == nil {
+			// Get tools info with timeout
+			toolsCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			if tools, err := mcpClient.ListTools(toolsCtx, mcp.ListToolsRequest{}); err == nil {
+				response["toolCount"] = len(tools.Tools)
+			} else {
+				d.logger.Warn("Failed to get tool count in health resource", "error", err)
+			}
+		}
+	}
+
+	responseBody, err := json.Marshal(response)
+	if err != nil {
+		return sender.Send(&backend.CallResourceResponse{
+			Status: 500,
+			Body:   []byte(fmt.Sprintf("Failed to marshal health response: %v", err)),
+		})
+	}
+
+	return sender.Send(&backend.CallResourceResponse{
+		Status: 200,
+		Headers: map[string][]string{
+			"Content-Type": {"application/json"},
+		},
+		Body: responseBody,
+	})
+}
+
 func (d *Datasource) handleServersResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
 	// Return information about the connected MCP server
+	connected := false
+	if d.mcpClient != nil {
+		connected = true
+	}
+
 	serverInfo := map[string]interface{}{
 		"serverUrl": d.settings.ServerURL,
 		"transport": d.settings.Transport,
-		"connected": d.mcpClient != nil,
+		"connected": connected,
 	}
 
 	response, err := json.Marshal(serverInfo)
