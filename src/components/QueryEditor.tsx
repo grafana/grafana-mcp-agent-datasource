@@ -1,0 +1,329 @@
+import React, { ChangeEvent, useState, useEffect } from 'react';
+import { 
+  InlineField, 
+  Input, 
+  Stack, 
+  TextArea, 
+  Select, 
+  Button, 
+  Collapse,
+  Alert,
+  Badge,
+  HorizontalGroup,
+  VerticalGroup,
+  Card,
+  IconButton
+} from '@grafana/ui';
+import { QueryEditorProps, SelectableValue } from '@grafana/data';
+import { DataSource } from '../datasource';
+import { 
+  MCPDataSourceOptions, 
+  MCPQuery, 
+  MCPTool, 
+  DEFAULT_QUERY_TEMPLATES, 
+  MCPQueryTemplate 
+} from '../types';
+
+type Props = QueryEditorProps<DataSource, MCPQuery, MCPDataSourceOptions>;
+
+export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
+  const [availableTools, setAvailableTools] = useState<MCPTool[]>([]);
+  const [isLoadingTools, setIsLoadingTools] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
+
+  // Initialize query with defaults if needed
+  const currentQuery: MCPQuery = {
+    ...query,
+    query: query.query || '',
+    maxResults: query.maxResults || 100,
+    format: query.format || 'auto',
+  };
+
+  // Load available tools on component mount
+  useEffect(() => {
+    loadAvailableTools();
+  }, []);
+
+  const loadAvailableTools = async () => {
+    setIsLoadingTools(true);
+    try {
+      // In a real implementation, this would call the datasource to get available tools
+      // For now, we'll use mock data
+      const mockTools: MCPTool[] = [
+        { name: 'search', description: 'Search for information' },
+        { name: 'analyze', description: 'Analyze data' },
+        { name: 'query_database', description: 'Query database' },
+        { name: 'fetch_data', description: 'Fetch external data' },
+      ];
+      setAvailableTools(mockTools);
+    } catch (error) {
+      console.error('Failed to load available tools:', error);
+    } finally {
+      setIsLoadingTools(false);
+    }
+  };
+
+  // Query text change handler
+  const onQueryChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    onChange({ 
+      ...currentQuery, 
+      query: event.target.value 
+    });
+  };
+
+  // Tool selection change handler
+  const onToolChange = (option: SelectableValue<string>) => {
+    onChange({ 
+      ...currentQuery, 
+      toolName: option.value 
+    });
+  };
+
+  // Max results change handler
+  const onMaxResultsChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(event.target.value, 10);
+    onChange({ 
+      ...currentQuery, 
+      maxResults: isNaN(value) ? 100 : value 
+    });
+  };
+
+  // Format change handler
+  const onFormatChange = (option: SelectableValue<string>) => {
+    onChange({ 
+      ...currentQuery, 
+      format: option.value 
+    });
+  };
+
+  // Run query handler
+  const handleRunQuery = () => {
+    if (!currentQuery.query.trim()) {
+      return;
+    }
+    onRunQuery();
+  };
+
+  // Template selection handler
+  const onTemplateSelect = (template: MCPQueryTemplate) => {
+    onChange({
+      ...currentQuery,
+      query: template.query,
+      toolName: template.toolName,
+      arguments: template.arguments,
+    });
+    setShowTemplates(false);
+  };
+
+  // Clear query handler
+  const onClearQuery = () => {
+    onChange({
+      ...currentQuery,
+      query: '',
+      toolName: undefined,
+      arguments: undefined,
+    });
+  };
+
+  // Tool options for select dropdown
+  const toolOptions: SelectableValue[] = [
+    { label: 'Auto-select tool', value: undefined, description: 'Let MCP client choose the best tool' },
+    ...availableTools.map(tool => ({
+      label: tool.name,
+      value: tool.name,
+      description: tool.description,
+    })),
+  ];
+
+  // Format options
+  const formatOptions: SelectableValue[] = [
+    { label: 'Auto', value: 'auto', description: 'Auto-detect best format' },
+    { label: 'Table', value: 'table', description: 'Tabular data format' },
+    { label: 'Time Series', value: 'timeseries', description: 'Time series data format' },
+    { label: 'Text', value: 'text', description: 'Plain text format' },
+    { label: 'JSON', value: 'json', description: 'JSON data format' },
+  ];
+
+  return (
+    <VerticalGroup spacing="md">
+      {/* Main Query Section */}
+      <Card>
+        <Card.Heading>Natural Language Query</Card.Heading>
+        <Card.Body>
+          <Stack direction="column" gap={2}>
+            <InlineField 
+              label="Query" 
+              labelWidth={12}
+              tooltip="Enter your query in natural language"
+              grow
+            >
+              <HorizontalGroup spacing="sm">
+                <TextArea
+                  id="query-editor-query"
+                  onChange={onQueryChange}
+                  value={currentQuery.query}
+                  placeholder="Ask your question in natural language, e.g., 'Show me the latest sales data' or 'What are the top performing products?'"
+                  rows={3}
+                  style={{ minWidth: '400px', flex: 1 }}
+                />
+                <VerticalGroup spacing="xs">
+                  <Button 
+                    variant="primary" 
+                    size="sm"
+                    onClick={handleRunQuery}
+                    disabled={!currentQuery.query.trim()}
+                    icon="play"
+                  >
+                    Run Query
+                  </Button>
+                  <Button 
+                    variant="secondary" 
+                    size="sm"
+                    onClick={onClearQuery}
+                    icon="times"
+                  >
+                    Clear
+                  </Button>
+                </VerticalGroup>
+              </HorizontalGroup>
+            </InlineField>
+
+            <HorizontalGroup spacing="md">
+              <InlineField label="Tool" labelWidth={12} tooltip="Select a specific MCP tool or let the system auto-select">
+                <Select
+                  options={toolOptions}
+                  value={currentQuery.toolName}
+                  onChange={onToolChange}
+                  placeholder="Auto-select tool"
+                  width={25}
+                  isLoading={isLoadingTools}
+                />
+              </InlineField>
+
+              <Button 
+                variant="secondary" 
+                size="sm"
+                onClick={() => setShowTemplates(!showTemplates)}
+                icon="book"
+              >
+                Templates
+              </Button>
+
+              <Button 
+                variant="secondary" 
+                size="sm"
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                icon="cog"
+              >
+                Advanced
+              </Button>
+            </HorizontalGroup>
+          </Stack>
+        </Card.Body>
+      </Card>
+
+      {/* Query Templates */}
+      {showTemplates && (
+        <Card>
+          <Card.Heading>Query Templates</Card.Heading>
+          <Card.Body>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '12px' }}>
+              {DEFAULT_QUERY_TEMPLATES.map((template, index) => (
+                <div 
+                  key={index}
+                  style={{ 
+                    border: '1px solid #e1e5e9', 
+                    borderRadius: '4px', 
+                    padding: '12px',
+                    cursor: 'pointer',
+                    backgroundColor: '#f7f8fa'
+                  }}
+                  onClick={() => onTemplateSelect(template)}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
+                    <strong>{template.name}</strong>
+                    {template.category && <Badge text={template.category} color="blue" />}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#6c7680', marginBottom: '8px' }}>
+                    {template.description}
+                  </div>
+                  <div style={{ fontFamily: 'monospace', fontSize: '11px', color: '#2e3338' }}>
+                    {template.query}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card.Body>
+        </Card>
+      )}
+
+      {/* Advanced Options */}
+      {showAdvanced && (
+        <Card>
+          <Card.Heading>Advanced Options</Card.Heading>
+          <Card.Body>
+            <HorizontalGroup spacing="md">
+              <InlineField 
+                label="Max Results" 
+                labelWidth={16}
+                tooltip="Maximum number of results to return"
+              >
+                <Input
+                  id="query-editor-max-results"
+                  type="number"
+                  onChange={onMaxResultsChange}
+                  value={currentQuery.maxResults}
+                  placeholder="100"
+                  width={15}
+                  min={1}
+                  max={10000}
+                />
+              </InlineField>
+
+              <InlineField 
+                label="Format" 
+                labelWidth={16}
+                tooltip="Preferred output format"
+              >
+                <Select
+                  options={formatOptions}
+                  value={currentQuery.format}
+                  onChange={onFormatChange}
+                  width={20}
+                />
+              </InlineField>
+            </HorizontalGroup>
+
+            {currentQuery.toolName && (
+              <Alert title="Tool Selected" severity="info">
+                <p>
+                  Using tool: <Badge text={currentQuery.toolName} color="blue" />
+                </p>
+                <p>
+                  {availableTools.find(t => t.name === currentQuery.toolName)?.description}
+                </p>
+              </Alert>
+            )}
+          </Card.Body>
+        </Card>
+      )}
+
+      {/* Server Status */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0' }}>
+        <div style={{ fontSize: '12px', color: '#6c7680' }}>
+          Available tools: <Badge text={availableTools.length.toString()} color="green" />
+        </div>
+        <Button 
+          variant="secondary" 
+          size="sm"
+          onClick={loadAvailableTools}
+          icon="sync"
+          disabled={isLoadingTools}
+        >
+          {isLoadingTools ? 'Loading...' : 'Refresh Tools'}
+        </Button>
+      </div>
+    </VerticalGroup>
+  );
+}

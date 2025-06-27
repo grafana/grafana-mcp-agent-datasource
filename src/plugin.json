@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "datasource",
+  "name": "MCP Client",
+  "id": "grafana-mcpclient-datasource",
+  "metrics": true,
+  "backend": true,
+  "executable": "gpx_mcp_client",
+  "info": {
+    "description": "Connect to Model Context Protocol (MCP) servers and query data using natural language",
+    "author": {
+      "name": "Grafana"
+    },
+    "keywords": ["datasource", "mcp", "model-context-protocol", "natural-language", "ai"],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "links": [],
+    "screenshots": [],
+    "version": "%VERSION%",
+    "updated": "%TODAY%"
+  },
+  "dependencies": {
+    "grafanaDependency": ">=10.4.0",
+    "plugins": []
+  }
+}
