@@ -14,8 +14,7 @@ import {
   MCPDataSourceOptions, 
   DEFAULT_QUERY, 
   MCPTool, 
-  MCPConnectionStatus,
-  TestConnectionResult 
+  MCPConnectionStatus
 } from './types';
 
 export class DataSource extends DataSourceWithBackend<MCPQuery, MCPDataSourceOptions> {
@@ -114,26 +113,7 @@ export class DataSource extends DataSourceWithBackend<MCPQuery, MCPDataSourceOpt
     }
   }
 
-  /**
-   * Test connection to MCP server with detailed results
-   */
-  async testConnection(): Promise<TestConnectionResult> {
-    try {
-      const response = await this.getResource('test-connection');
-      return {
-        success: true,
-        message: response.message || 'Connection successful',
-        serverInfo: response.serverInfo,
-        capabilities: response.capabilities,
-        toolCount: response.toolCount,
-      };
-    } catch (error: any) {
-      return {
-        success: false,
-        message: error.message || 'Connection failed',
-      };
-    }
-  }
+
 
   /**
    * Execute a specific MCP tool
