@@ -8,7 +8,8 @@ import (
 type MCPDataSourceSettings struct {
 	// Server connection settings
 	ServerURL         string `json:"serverUrl"`
-	Transport         string `json:"transport"`         // "stdio", "sse", "streamable"
+	Transport         string `json:"transport"`         // "stream", "sse"
+	StreamPath        string `json:"streamPath"`        // path for stream transport (default: "/stream")
 	ConnectionTimeout int    `json:"connectionTimeout"` // timeout in seconds
 
 	// Authentication settings

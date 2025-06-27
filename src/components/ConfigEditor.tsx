@@ -1,33 +1,25 @@
-import React, { ChangeEvent, useState } from 'react';
-import { 
-  InlineField, 
-  Input, 
-  SecretInput, 
-  Select, 
-  Button, 
-  Alert, 
+import React, { ChangeEvent } from 'react';
+import {
+  InlineField,
+  Input,
+  SecretInput,
+  Select,
   FieldSet,
-  InlineFieldRow,
-  Spinner,
-  Badge
+  InlineFieldRow
 } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps, SelectableValue } from '@grafana/data';
-import { getBackendSrv } from '@grafana/runtime';
-import { MCPDataSourceOptions, MCPSecureJsonData, TestConnectionResult } from '../types';
+import { MCPDataSourceOptions, MCPSecureJsonData } from '../types';
 
-interface Props extends DataSourcePluginOptionsEditorProps<MCPDataSourceOptions, MCPSecureJsonData> {}
+interface Props extends DataSourcePluginOptionsEditorProps<MCPDataSourceOptions, MCPSecureJsonData> { }
 
 const TRANSPORT_OPTIONS: SelectableValue[] = [
-  { label: 'WebSocket', value: 'websocket', description: 'WebSocket transport (recommended)' },
-  { label: 'HTTP', value: 'http', description: 'HTTP transport' },
+  { label: 'Stream', value: 'stream', description: 'Streamable HTTP transport (recommended, uses configurable path)' },
+  { label: 'SSE', value: 'sse', description: 'Server-Sent Events transport (deprecated, uses /sse)' },
 ];
 
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
   const { jsonData, secureJsonFields, secureJsonData } = options;
-  
-  const [isTestingConnection, setIsTestingConnection] = useState(false);
-  const [testResult, setTestResult] = useState<TestConnectionResult | null>(null);
 
   // Handler for server URL changes
   const onServerUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -46,10 +38,23 @@ export function ConfigEditor(props: Props) {
       ...options,
       jsonData: {
         ...jsonData,
-        transport: option.value as 'websocket' | 'http',
+        transport: option.value as 'stream' | 'sse',
       },
     });
   };
+
+  // Handler for stream path changes
+  const onStreamPathChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...jsonData,
+        streamPath: event.target.value,
+      },
+    });
+  };
+
+
 
   // Handler for timeout changes
   const onTimeoutChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -233,110 +238,61 @@ export function ConfigEditor(props: Props) {
     });
   };
 
-  // Test connection handler
-  const onTestConnection = async () => {
-    if (!jsonData.serverUrl) {
-      setTestResult({
-        success: false,
-        message: 'Server URL is required',
-      });
-      return;
-    }
 
-    setIsTestingConnection(true);
-    setTestResult(null);
-
-    try {
-      // Create a test payload with current configuration
-      const testPayload = {
-        datasource: {
-          ...options,
-          jsonData,
-          secureJsonData,
-        },
-      };
-
-      // Call the backend health check endpoint directly
-      const healthResponse = await getBackendSrv().post(
-        `/api/datasources/${options.id}/health`,
-        testPayload
-      );
-      
-      if (healthResponse?.status === 'OK') {
-        // Try to get additional info from backend about the MCP server
-        try {
-          const toolsResponse = await getBackendSrv().get(
-            `/api/datasources/${options.id}/resources/tools`
-          );
-          const serverResponse = await getBackendSrv().get(
-            `/api/datasources/${options.id}/resources/servers`
-          );
-          
-          setTestResult({
-            success: true,
-            message: healthResponse.message || 'Successfully connected to MCP server',
-            serverInfo: serverResponse?.serverInfo,
-            capabilities: serverResponse?.capabilities,
-            toolCount: Array.isArray(toolsResponse) ? toolsResponse.length : undefined,
-          });
-        } catch {
-          // If we can't get detailed info, just show basic success
-          setTestResult({
-            success: true,
-            message: healthResponse.message || 'Successfully connected to MCP server',
-          });
-        }
-      } else {
-        setTestResult({
-          success: false,
-          message: healthResponse?.message || 'Connection test failed',
-        });
-      }
-    } catch (error: any) {
-      setTestResult({
-        success: false,
-        message: `Connection failed: ${error.message || error}`,
-      });
-    } finally {
-      setIsTestingConnection(false);
-    }
-  };
 
   return (
     <>
       <FieldSet label="MCP Server Configuration">
-        <InlineField 
-          label="Server URL" 
-          labelWidth={20} 
-          tooltip="The URL of the MCP server (e.g., ws://localhost:8080 or http://localhost:8080)"
+        <InlineField
+          label="Server URL"
+          labelWidth={20}
+          tooltip="The HTTP/HTTPS URL of the MCP server base URL"
           required
         >
           <Input
             id="config-editor-server-url"
             onChange={onServerUrlChange}
             value={jsonData.serverUrl || ''}
-            placeholder="ws://localhost:8080"
+            placeholder="http://localhost:8080"
             width={50}
           />
         </InlineField>
 
-        <InlineField 
-          label="Transport" 
-          labelWidth={20} 
-          tooltip="Choose the transport protocol for MCP communication"
-        >
-          <Select
-            options={TRANSPORT_OPTIONS}
-            value={jsonData.transport || 'websocket'}
-            onChange={onTransportChange}
-            width={25}
-          />
-        </InlineField>
+        <InlineFieldRow>
+          <InlineField
+            label="Transport"
+            labelWidth={20}
+            tooltip="Choose the transport protocol. Stream is recommended as SSE is deprecated in the MCP spec."
+          >
+            <Select
+              options={TRANSPORT_OPTIONS}
+              value={jsonData.transport || 'stream'}
+              onChange={onTransportChange}
+              width={25}
+            />
+          </InlineField>
+
+          {(jsonData.transport || 'stream') === 'stream' && (
+            <InlineField
+              label="Stream Path"
+              labelWidth={20}
+              tooltip="The path for the stream transport endpoint (e.g., /stream, /mcp)"
+            >
+              <Input
+                id="config-editor-stream-path"
+                onChange={onStreamPathChange}
+                value={jsonData.streamPath || '/stream'}
+                placeholder="/stream"
+                width={25}
+              />
+            </InlineField>
+          )}
+        </InlineFieldRow>
 
         <InlineFieldRow>
-          <InlineField 
-            label="Timeout (seconds)" 
-            labelWidth={20} 
+          <InlineField
+            label="Timeout (seconds)"
+            labelWidth={20}
             tooltip="Request timeout in seconds"
           >
             <Input
@@ -351,9 +307,9 @@ export function ConfigEditor(props: Props) {
             />
           </InlineField>
 
-          <InlineField 
-            label="Max Retries" 
-            labelWidth={20} 
+          <InlineField
+            label="Max Retries"
+            labelWidth={20}
             tooltip="Maximum number of retry attempts"
           >
             <Input
@@ -368,9 +324,9 @@ export function ConfigEditor(props: Props) {
             />
           </InlineField>
 
-          <InlineField 
-            label="Retry Interval (seconds)" 
-            labelWidth={20} 
+          <InlineField
+            label="Retry Interval (seconds)"
+            labelWidth={24}
             tooltip="Time to wait between retry attempts"
           >
             <Input
@@ -385,53 +341,12 @@ export function ConfigEditor(props: Props) {
             />
           </InlineField>
         </InlineFieldRow>
-
-        <InlineField label="Test Connection" labelWidth={20}>
-          <Button 
-            onClick={onTestConnection} 
-            disabled={isTestingConnection || !jsonData.serverUrl}
-            icon={isTestingConnection ? 'fa fa-spinner' : 'cloud'}
-          >
-            {isTestingConnection ? (
-              <>
-                <Spinner size={14} inline /> Testing...
-              </>
-            ) : (
-              'Test Connection'
-            )}
-          </Button>
-        </InlineField>
-
-        {testResult && (
-          <Alert 
-            title={testResult.success ? 'Connection Successful' : 'Connection Failed'} 
-            severity={testResult.success ? 'success' : 'error'}
-          >
-            <p>{testResult.message}</p>
-            {testResult.success && testResult.serverInfo && (
-              <div>
-                <p><strong>Server:</strong> {testResult.serverInfo.name} v{testResult.serverInfo.version}</p>
-                {testResult.toolCount && (
-                  <p><strong>Available Tools:</strong> <Badge text={testResult.toolCount.toString()} color="blue" /></p>
-                )}
-                {testResult.capabilities && (
-                  <div>
-                    <strong>Capabilities:</strong>
-                    {testResult.capabilities.tools && <Badge text="Tools" color="green" />}
-                    {testResult.capabilities.resources && <Badge text="Resources" color="green" />}
-                    {testResult.capabilities.prompts && <Badge text="Prompts" color="green" />}
-                  </div>
-                )}
-              </div>
-            )}
-          </Alert>
-        )}
       </FieldSet>
 
       <FieldSet label="Authentication (Optional)">
-        <InlineField 
-          label="API Key" 
-          labelWidth={20} 
+        <InlineField
+          label="API Key"
+          labelWidth={20}
           tooltip="API key for authentication"
         >
           <SecretInput
@@ -445,9 +360,9 @@ export function ConfigEditor(props: Props) {
           />
         </InlineField>
 
-        <InlineField 
-          label="Auth Token" 
-          labelWidth={20} 
+        <InlineField
+          label="Auth Token"
+          labelWidth={20}
           tooltip="Bearer token for authentication"
         >
           <SecretInput
@@ -462,9 +377,9 @@ export function ConfigEditor(props: Props) {
         </InlineField>
 
         <InlineFieldRow>
-          <InlineField 
-            label="Username" 
-            labelWidth={20} 
+          <InlineField
+            label="Username"
+            labelWidth={20}
             tooltip="Username for basic authentication"
           >
             <SecretInput
@@ -478,9 +393,9 @@ export function ConfigEditor(props: Props) {
             />
           </InlineField>
 
-          <InlineField 
-            label="Password" 
-            labelWidth={20} 
+          <InlineField
+            label="Password"
+            labelWidth={20}
             tooltip="Password for basic authentication"
           >
             <SecretInput
@@ -496,9 +411,9 @@ export function ConfigEditor(props: Props) {
         </InlineFieldRow>
 
         <InlineFieldRow>
-          <InlineField 
-            label="Client ID" 
-            labelWidth={20} 
+          <InlineField
+            label="Client ID"
+            labelWidth={20}
             tooltip="OAuth2 client ID"
           >
             <SecretInput
@@ -512,9 +427,9 @@ export function ConfigEditor(props: Props) {
             />
           </InlineField>
 
-          <InlineField 
-            label="Client Secret" 
-            labelWidth={20} 
+          <InlineField
+            label="Client Secret"
+            labelWidth={20}
             tooltip="OAuth2 client secret"
           >
             <SecretInput

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
@@ -45,6 +46,7 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 	log.DefaultLogger.Info("Parsed MCP config",
 		"serverURL", config.ServerURL,
 		"transport", config.Transport,
+		"streamPath", config.StreamPath,
 		"timeout", config.ConnectionTimeout)
 
 	return &Datasource{
@@ -79,30 +81,51 @@ func createMCPClient(config models.MCPDataSourceSettings) (*client.Client, error
 		return nil, fmt.Errorf("invalid server URL: %w", err)
 	}
 
+	// Determine transport type (default to stream since SSE is deprecated)
+	transport := config.Transport
+	if transport == "" {
+		transport = "stream" // Default to stream
+	}
+
 	var mcpClient *client.Client
 
 	switch serverURL.Scheme {
 	case "http", "https":
-		// Use SSE transport for HTTP(S) URLs
-		mcpClient, err = client.NewSSEMCPClient(config.ServerURL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create SSE client: %w", err)
-		}
-	case "ws", "wss":
-		// For WebSocket URLs, we could use streamable HTTP as an alternative
-		// Convert ws:// to http:// and wss:// to https://
-		httpURL := config.ServerURL
-		if serverURL.Scheme == "ws" {
-			httpURL = "http" + httpURL[2:]
-		} else if serverURL.Scheme == "wss" {
-			httpURL = "https" + httpURL[3:]
-		}
-		mcpClient, err = client.NewStreamableHttpClient(httpURL)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create streamable HTTP client: %w", err)
+		switch transport {
+		case "sse":
+			// SSE transport requires /sse endpoint
+			sseURL := config.ServerURL
+			if !strings.HasSuffix(sseURL, "/sse") {
+				sseURL = strings.TrimSuffix(sseURL, "/") + "/sse"
+			}
+			mcpClient, err = client.NewSSEMCPClient(sseURL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create SSE client: %w", err)
+			}
+		case "stream":
+			// Stream transport: use configured path (default: /stream)
+			streamPath := config.StreamPath
+			if streamPath == "" {
+				streamPath = "/stream" // Default to /stream
+			}
+
+			// Ensure path starts with /
+			if !strings.HasPrefix(streamPath, "/") {
+				streamPath = "/" + streamPath
+			}
+
+			streamURL := strings.TrimSuffix(config.ServerURL, "/") + streamPath
+			log.DefaultLogger.Info("Creating stream transport client", "url", streamURL, "path", streamPath)
+
+			mcpClient, err = client.NewStreamableHttpClient(streamURL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create streamable HTTP client: %w", err)
+			}
+		default:
+			return nil, fmt.Errorf("unsupported transport: %s (supported: stream, sse)", transport)
 		}
 	default:
-		return nil, fmt.Errorf("unsupported URL scheme: %s (supported: http, https, ws, wss)", serverURL.Scheme)
+		return nil, fmt.Errorf("unsupported URL scheme: %s (only HTTP and HTTPS are supported)", serverURL.Scheme)
 	}
 
 	// Use a reasonable timeout for connection and initialization
@@ -117,6 +140,7 @@ func createMCPClient(config models.MCPDataSourceSettings) (*client.Client, error
 	// The SSE client needs a long-lived context for the stream to stay alive
 	clientCtx := context.Background()
 
+	// Start the MCP client
 	if err := mcpClient.Start(clientCtx); err != nil {
 		return nil, fmt.Errorf("failed to start MCP client: %w", err)
 	}
@@ -132,27 +156,10 @@ func createMCPClient(config models.MCPDataSourceSettings) (*client.Client, error
 	}
 	initRequest.Params.Capabilities = mcp.ClientCapabilities{}
 
-	log.DefaultLogger.Info("About to call mcpClient.Initialize()")
-
-	initResult, err := mcpClient.Initialize(clientCtx, initRequest)
+	_, err = mcpClient.Initialize(clientCtx, initRequest)
 	if err != nil {
-		log.DefaultLogger.Error("mcpClient.Initialize() failed", "error", err)
 		mcpClient.Close()
 		return nil, fmt.Errorf("failed to initialize MCP client: %w", err)
-	}
-
-	log.DefaultLogger.Info("mcpClient.Initialize() succeeded", "result", initResult)
-
-	// Test ListTools immediately after initialization to check if the issue is timing-related
-	log.DefaultLogger.Info("Testing ListTools immediately after initialization")
-	testCtx, testCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer testCancel()
-
-	testTools, testErr := mcpClient.ListTools(testCtx, mcp.ListToolsRequest{})
-	if testErr != nil {
-		log.DefaultLogger.Error("Immediate ListTools test failed", "error", testErr)
-	} else {
-		log.DefaultLogger.Info("Immediate ListTools test succeeded", "toolCount", len(testTools.Tools))
 	}
 
 	log.DefaultLogger.Info("MCP client successfully created and initialized")
@@ -162,27 +169,16 @@ func createMCPClient(config models.MCPDataSourceSettings) (*client.Client, error
 
 // getMCPClient returns the MCP client, creating it if necessary (lazy initialization)
 func (d *Datasource) getMCPClient() (*client.Client, error) {
-	d.logger.Info("getMCPClient() called", "hasExistingClient", d.mcpClient != nil)
-
 	if d.mcpClient != nil {
-		d.logger.Debug("Reusing existing MCP client")
 		return d.mcpClient, nil
 	}
 
-	d.logger.Info("Creating MCP client for datasource",
-		"uid", d.datasourceUID,
-		"serverURL", d.settings.ServerURL)
-
-	d.logger.Info("About to call createMCPClient()")
 	mcpClient, err := createMCPClient(d.settings)
 	if err != nil {
-		d.logger.Error("createMCPClient() failed", "error", err)
 		return nil, fmt.Errorf("failed to create MCP client: %w", err)
 	}
 
-	d.logger.Info("createMCPClient() succeeded, caching client")
 	d.mcpClient = mcpClient
-	d.logger.Info("MCP client created and cached", "uid", d.datasourceUID)
 	return d.mcpClient, nil
 }
 

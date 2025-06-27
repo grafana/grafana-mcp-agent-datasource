@@ -68,8 +68,9 @@ export interface MCPConnectionStatus {
  * DataSource configuration options stored in Grafana
  */
 export interface MCPDataSourceOptions extends DataSourceJsonData {
-  serverUrl?: string;                   // MCP server URL
-  transport?: 'websocket' | 'http';     // Transport protocol
+  serverUrl?: string;                   // MCP server URL (HTTP/HTTPS)
+  transport?: 'stream' | 'sse';         // Transport protocol (stream is recommended, sse is deprecated)
+  streamPath?: string;                  // Path for stream transport (default: /stream)
   timeout?: number;                     // Timeout in seconds
   maxRetries?: number;                  // Maximum retry attempts
   retryInterval?: number;               // Retry interval in seconds
@@ -138,16 +139,7 @@ export interface ValidationResult {
   warnings: string[];
 }
 
-/**
- * Test connection result
- */
-export interface TestConnectionResult {
-  success: boolean;
-  message: string;
-  serverInfo?: MCPServerInfo;
-  capabilities?: MCPServerCapabilities;
-  toolCount?: number;
-}
+
 
 // Legacy types (for backward compatibility)
 export interface MyQuery extends DataQuery {
