@@ -46,7 +46,7 @@ export class DataSource extends DataSourceWithBackend<MCPQuery, MCPDataSourceOpt
   /**
    * Override query method to add custom MCP-specific logic
    */
-  async query(request: DataQueryRequest<MCPQuery>): Promise<DataQueryResponse> {
+  query(request: DataQueryRequest<MCPQuery>) {
     // Pre-process queries to ensure they have required fields
     const processedRequest = {
       ...request,
@@ -243,7 +243,7 @@ export class DataSource extends DataSourceWithBackend<MCPQuery, MCPDataSourceOpt
   /**
    * Helper method to handle backend resource requests with proper error handling
    */
-  private async getResource(path: string): Promise<any> {
+  async getResource(path: string): Promise<any> {
     const url = `api/datasources/${this.id}/resources/${path}`;
     return getBackendSrv().get(url);
   }
@@ -251,7 +251,7 @@ export class DataSource extends DataSourceWithBackend<MCPQuery, MCPDataSourceOpt
   /**
    * Helper method to handle backend resource POST requests
    */
-  private async postResource(path: string, data: any): Promise<any> {
+  async postResource(path: string, data: any): Promise<any> {
     const url = `api/datasources/${this.id}/resources/${path}`;
     return getBackendSrv().post(url, data);
   }
