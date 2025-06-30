@@ -74,6 +74,10 @@ export interface MCPDataSourceOptions extends DataSourceJsonData {
   timeout?: number;                     // Timeout in seconds
   maxRetries?: number;                  // Maximum retry attempts
   retryInterval?: number;               // Retry interval in seconds
+  
+  // LLM Configuration
+  llmProvider?: 'anthropic' | 'openai' | 'mock';  // LLM provider for natural language processing
+  llmModel?: string;                    // LLM model name (e.g., claude-3-5-sonnet-20241022, gpt-4)
 }
 
 /**
@@ -86,6 +90,9 @@ export interface MCPSecureJsonData {
   password?: string;
   clientId?: string;
   clientSecret?: string;
+  
+  // LLM API Keys
+  llmApiKey?: string;                   // API key for LLM provider (Anthropic, OpenAI, etc.)
 }
 
 /**

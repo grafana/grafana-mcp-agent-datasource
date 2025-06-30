@@ -19,6 +19,11 @@ type MCPDataSourceSettings struct {
 	BearerToken   string            `json:"bearerToken"`
 	CustomHeaders map[string]string `json:"customHeaders"`
 
+	// LLM settings for natural language processing
+	LLMProvider string `json:"llmProvider"` // "openai", "anthropic", "azure"
+	LLMModel    string `json:"llmModel"`    // model name (e.g., "gpt-4", "claude-3-sonnet")
+	LLMAPIKey   string `json:"llmApiKey"`   // API key for LLM service
+
 	// Advanced settings
 	MaxRetries        int  `json:"maxRetries"`
 	RetryInterval     int  `json:"retryInterval"` // interval in seconds

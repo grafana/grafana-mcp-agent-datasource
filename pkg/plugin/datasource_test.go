@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -165,6 +166,111 @@ func TestMCPClientDirect(t *testing.T) {
 	t.Logf("Found %d tools", len(tools.Tools))
 	for i, tool := range tools.Tools {
 		t.Logf("Tool %d: %s - %s", i+1, tool.Name, tool.Description)
+	}
+}
+
+func TestNaturalLanguageQuery(t *testing.T) {
+	// Test the new natural language query functionality
+	config := models.MCPDataSourceSettings{
+		ServerURL:         "http://localhost:8080",
+		Transport:         "sse", // Use SSE transport explicitly
+		ConnectionTimeout: 30,
+		LLMProvider:       "mock", // Use mock provider for testing
+	}
+
+	settingsJSON, err := json.Marshal(config)
+	require.NoError(t, err)
+
+	settings := backend.DataSourceInstanceSettings{
+		JSONData: settingsJSON,
+	}
+
+	ctx := context.Background()
+	instance, err := NewDatasource(ctx, settings)
+	require.NoError(t, err)
+
+	ds, ok := instance.(*Datasource)
+	require.True(t, ok)
+	defer ds.Dispose()
+
+	testCases := []struct {
+		name         string
+		query        string
+		expectFrames int
+	}{
+		{
+			name:         "simple log query",
+			query:        "Show me recent error logs",
+			expectFrames: 3, // main result + tool calls + tool results
+		},
+		{
+			name:         "general question",
+			query:        "What tools are available?",
+			expectFrames: 1, // just main result when no tools are called
+		},
+		{
+			name:         "search query",
+			query:        "Find logs containing 'database connection'",
+			expectFrames: 3, // main result + tool calls + tool results
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create natural language query
+			queryJSON := fmt.Sprintf(`{"queryType": "natural_language", "query": "%s"}`, tc.query)
+			dataQuery := backend.DataQuery{
+				JSON: json.RawMessage(queryJSON),
+			}
+
+			queryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			response := ds.query(queryCtx, backend.PluginContext{}, dataQuery)
+
+			if response.Error != nil {
+				t.Logf("Query error: %v", response.Error)
+			}
+
+			assert.NoError(t, response.Error)
+			assert.NotEmpty(t, response.Frames)
+
+			t.Logf("Query '%s' returned %d frames", tc.query, len(response.Frames))
+
+			// Verify the main result frame
+			if len(response.Frames) > 0 {
+				mainFrame := response.Frames[0]
+				assert.Equal(t, "natural_language_result", mainFrame.Name)
+				assert.True(t, len(mainFrame.Fields) >= 4) // query, summary, tool_calls_count, processed_at
+
+				// Check that we have the expected fields
+				fieldNames := make([]string, len(mainFrame.Fields))
+				for i, field := range mainFrame.Fields {
+					fieldNames[i] = field.Name
+				}
+				assert.Contains(t, fieldNames, "query")
+				assert.Contains(t, fieldNames, "summary")
+				assert.Contains(t, fieldNames, "tool_calls_count")
+				assert.Contains(t, fieldNames, "processed_at")
+
+				t.Logf("Main frame fields: %v", fieldNames)
+
+				// Check metadata
+				assert.NotNil(t, mainFrame.Meta)
+				assert.NotNil(t, mainFrame.Meta.Custom)
+				if customMap, ok := mainFrame.Meta.Custom.(map[string]interface{}); ok {
+					assert.Equal(t, "natural_language", customMap["queryType"])
+				}
+			}
+
+			// Log information about all frames
+			for i, frame := range response.Frames {
+				t.Logf("Frame %d: %s with %d fields", i, frame.Name, len(frame.Fields))
+				for j, field := range frame.Fields {
+					t.Logf("  Field %d: %s (len=%d)", j, field.Name, field.Len())
+				}
+			}
+		})
 	}
 }
 

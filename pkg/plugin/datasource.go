@@ -15,6 +15,7 @@ import (
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 
+	"grafana-mcpclient-datasource/pkg/agent"
 	"grafana-mcpclient-datasource/pkg/models"
 )
 
@@ -43,11 +44,26 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		return nil, fmt.Errorf("failed to unmarshal settings: %w", err)
 	}
 
+	// Read secure fields from DecryptedSecureJSONData
+	if settings.DecryptedSecureJSONData != nil {
+		if llmApiKey, exists := settings.DecryptedSecureJSONData["llmApiKey"]; exists {
+			config.LLMAPIKey = llmApiKey
+		}
+		// Add other secure fields as needed
+		if apiKey, exists := settings.DecryptedSecureJSONData["apiKey"]; exists {
+			// Map to existing auth fields if needed
+			_ = apiKey
+		}
+	}
+
 	log.DefaultLogger.Info("Parsed MCP config",
 		"serverURL", config.ServerURL,
 		"transport", config.Transport,
 		"streamPath", config.StreamPath,
-		"timeout", config.ConnectionTimeout)
+		"timeout", config.ConnectionTimeout,
+		"llmProvider", config.LLMProvider,
+		"llmModel", config.LLMModel,
+		"hasLLMApiKey", config.LLMAPIKey != "")
 
 	return &Datasource{
 		settings:       config,
@@ -246,51 +262,129 @@ func (d *Datasource) executeNaturalLanguageQuery(ctx context.Context, query mode
 		return backend.ErrDataResponse(backend.StatusBadRequest, "query text is required for natural language queries")
 	}
 
-	// For natural language queries, we need to:
-	// 1. Analyze the query to determine which tools to use
-	// 2. Execute the appropriate tools
-	// 3. Format the results
-
-	// For now, let's implement a simple approach where we list available tools
-	// and return information about them along with the query
+	// Get MCP client
 	mcpClient, err := d.getMCPClient()
 	if err != nil {
 		d.logger.Error("Failed to get MCP client", "error", err)
 		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to get MCP client: %v", err))
 	}
 
-	toolsCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Create agent for intelligent query processing
+	agent, err := agent.NewAgent(mcpClient, d.settings)
+	if err != nil {
+		d.logger.Error("Failed to create agent", "error", err)
+		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to create agent: %v", err))
+	}
+
+	// Process the natural language query using the agent
+	queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second) // Longer timeout for LLM processing
 	defer cancel()
 
-	tools, err := mcpClient.ListTools(toolsCtx, mcp.ListToolsRequest{})
+	result, err := agent.ProcessQuery(queryCtx, query.Query)
 	if err != nil {
-		d.logger.Error("Failed to list tools for natural language query", "query", query.Query, "error", err)
-		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to list tools: %v", err))
+		d.logger.Error("Failed to process natural language query", "query", query.Query, "error", err)
+		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to process query: %v", err))
 	}
 
-	// Create a frame to hold the query results
-	frame := data.NewFrame("natural_language_query")
-	frame.Fields = append(frame.Fields,
-		data.NewField("query", nil, []string{query.Query}),
-		data.NewField("available_tools", nil, []int{len(tools.Tools)}),
-		data.NewField("timestamp", nil, []time.Time{time.Now()}),
+	// Create data frames from the agent result
+	frames := []*data.Frame{}
+
+	// Main result frame
+	mainFrame := data.NewFrame("natural_language_result")
+
+	// Create fields with single values
+	queryField := data.NewField("query", nil, []string{})
+	queryField.Append(result.Query)
+
+	summaryField := data.NewField("summary", nil, []string{})
+	summaryField.Append(result.Summary)
+
+	toolCallsCountField := data.NewField("tool_calls_count", nil, []string{})
+	toolCallsCountField.Append(fmt.Sprintf("%d", len(result.ToolCalls)))
+
+	processedAtField := data.NewField("processed_at", nil, []time.Time{})
+	processedAtField.Append(result.ProcessedAt)
+
+	mainFrame.Fields = append(mainFrame.Fields,
+		queryField,
+		summaryField,
+		toolCallsCountField,
+		processedAtField,
 	)
 
-	// Add tool information as metadata
-	toolNames := make([]string, len(tools.Tools))
-	for i, tool := range tools.Tools {
-		toolNames[i] = tool.Name
-	}
-	frame.Meta = &data.FrameMeta{
+	mainFrame.Meta = &data.FrameMeta{
 		Custom: map[string]interface{}{
-			"tools":     toolNames,
-			"query":     query.Query,
-			"queryType": "natural_language",
+			"queryType":      "natural_language",
+			"originalQuery":  query.Query,
+			"toolCallsCount": len(result.ToolCalls),
+			"summary":        result.Summary,
 		},
+	}
+	frames = append(frames, mainFrame)
+
+	// Tool calls frame (if any tools were called)
+	if len(result.ToolCalls) > 0 {
+		toolCallFrame := data.NewFrame("tool_calls")
+
+		toolNames := make([]string, len(result.ToolCalls))
+		reasonings := make([]string, len(result.ToolCalls))
+		arguments := make([]string, len(result.ToolCalls))
+
+		for i, toolCall := range result.ToolCalls {
+			toolNames[i] = toolCall.ToolName
+			reasonings[i] = toolCall.Reasoning
+			argsJSON, _ := json.Marshal(toolCall.Arguments)
+			arguments[i] = string(argsJSON)
+		}
+
+		toolCallFrame.Fields = append(toolCallFrame.Fields,
+			data.NewField("tool_name", nil, toolNames),
+			data.NewField("reasoning", nil, reasonings),
+			data.NewField("arguments", nil, arguments),
+		)
+
+		frames = append(frames, toolCallFrame)
+	}
+
+	// Tool results frame (if any tools were executed)
+	if len(result.Results) > 0 {
+		resultsFrame := data.NewFrame("tool_results")
+
+		toolNames := make([]string, len(result.Results))
+		successes := make([]bool, len(result.Results))
+		resultData := make([]string, len(result.Results))
+		errors := make([]string, len(result.Results))
+
+		for i, toolResult := range result.Results {
+			toolNames[i] = toolResult.ToolName
+			successes[i] = toolResult.Success
+
+			if toolResult.Data != nil {
+				if str, ok := toolResult.Data.(string); ok {
+					resultData[i] = str
+				} else {
+					dataJSON, _ := json.Marshal(toolResult.Data)
+					resultData[i] = string(dataJSON)
+				}
+			} else {
+				resultData[i] = ""
+			}
+
+			errors[i] = toolResult.Error
+		}
+
+		resultsFrame.Fields = append(resultsFrame.Fields,
+			data.NewField("tool_name", nil, toolNames),
+			data.NewField("success", nil, successes),
+			data.NewField("result_data", nil, resultData),
+			data.NewField("error", nil, errors),
+		)
+
+		frames = append(frames, resultsFrame)
 	}
 
 	return backend.DataResponse{
-		Frames: []*data.Frame{frame},
+		Frames: frames,
 	}
 }
 

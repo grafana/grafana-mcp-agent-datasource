@@ -17,6 +17,12 @@ const TRANSPORT_OPTIONS: SelectableValue[] = [
   { label: 'SSE', value: 'sse', description: 'Server-Sent Events transport (deprecated, uses /sse)' },
 ];
 
+const LLM_PROVIDER_OPTIONS: SelectableValue[] = [
+  { label: 'Mock Provider', value: 'mock', description: 'Mock LLM for testing (no API key required)' },
+  { label: 'Anthropic Claude', value: 'anthropic', description: 'Anthropic Claude API for intelligent queries' },
+  { label: 'OpenAI GPT', value: 'openai', description: 'OpenAI GPT API for intelligent queries' },
+];
+
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
   const { jsonData, secureJsonFields, secureJsonData } = options;
@@ -238,6 +244,51 @@ export function ConfigEditor(props: Props) {
     });
   };
 
+  // LLM Configuration handlers
+  const onLLMProviderChange = (option: SelectableValue<string>) => {
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...jsonData,
+        llmProvider: option.value as 'anthropic' | 'openai' | 'mock',
+      },
+    });
+  };
+
+  const onLLMModelChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...jsonData,
+        llmModel: event.target.value,
+      },
+    });
+  };
+
+  const onLLMAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onOptionsChange({
+      ...options,
+      secureJsonData: {
+        ...secureJsonData,
+        llmApiKey: event.target.value,
+      },
+    });
+  };
+
+  const onResetLLMAPIKey = () => {
+    onOptionsChange({
+      ...options,
+      secureJsonFields: {
+        ...secureJsonFields,
+        llmApiKey: false,
+      },
+      secureJsonData: {
+        ...secureJsonData,
+        llmApiKey: '',
+      },
+    });
+  };
+
 
 
   return (
@@ -443,6 +494,60 @@ export function ConfigEditor(props: Props) {
             />
           </InlineField>
         </InlineFieldRow>
+      </FieldSet>
+
+      <FieldSet label="LLM Configuration">
+        <InlineField
+          label="LLM Provider"
+          labelWidth={20}
+          tooltip="Choose the LLM provider for natural language query processing"
+        >
+          <Select
+            options={LLM_PROVIDER_OPTIONS}
+            value={jsonData.llmProvider || 'mock'}
+            onChange={onLLMProviderChange}
+            width={30}
+          />
+        </InlineField>
+
+        <InlineField
+          label="LLM Model"
+          labelWidth={20}
+          tooltip="The specific model to use (e.g., claude-3-5-sonnet-20241022, gpt-4)"
+        >
+          <Input
+            id="config-editor-llm-model"
+            onChange={onLLMModelChange}
+            value={jsonData.llmModel || ''}
+            placeholder={(jsonData.llmProvider === 'anthropic') ? 'claude-3-5-sonnet-20241022' : 
+                         (jsonData.llmProvider === 'openai') ? 'gpt-4' : 'mock-model'}
+            width={40}
+          />
+        </InlineField>
+
+        {(jsonData.llmProvider === 'anthropic' || jsonData.llmProvider === 'openai') && (
+          <InlineField
+            label="LLM API Key"
+            labelWidth={20}
+            tooltip={`API key for ${jsonData.llmProvider === 'anthropic' ? 'Anthropic Claude' : 'OpenAI GPT'} service`}
+          >
+            <SecretInput
+              id="config-editor-llm-api-key"
+              isConfigured={secureJsonFields?.llmApiKey}
+              value={secureJsonData?.llmApiKey || ''}
+              placeholder={`Enter your ${jsonData.llmProvider === 'anthropic' ? 'Anthropic' : 'OpenAI'} API key`}
+              width={40}
+              onReset={onResetLLMAPIKey}
+              onChange={onLLMAPIKeyChange}
+            />
+          </InlineField>
+        )}
+
+        {jsonData.llmProvider === 'mock' && (
+          <div style={{ marginTop: '8px', padding: '8px', backgroundColor: '#f0f0f0', borderRadius: '4px', fontSize: '12px' }}>
+            <strong>Mock Provider:</strong> No API key required. This provider generates simple responses for testing purposes.
+          </div>
+        )}
       </FieldSet>
     </>
   );
