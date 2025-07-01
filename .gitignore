@@ -50,3 +50,5 @@ ci/
 .env.development.local
 .env.test.local
 .env.production.local
+
+grafana-*-app

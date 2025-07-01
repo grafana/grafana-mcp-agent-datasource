@@ -1,14 +1,18 @@
-import React, { ChangeEvent } from 'react';
+import React, { ChangeEvent, useState, useEffect } from 'react';
 import {
   InlineField,
   Input,
   SecretInput,
   Select,
   FieldSet,
-  InlineFieldRow
+  InlineFieldRow,
+  Button,
+  Checkbox,
+  IconButton,
+  TextArea
 } from '@grafana/ui';
 import { DataSourcePluginOptionsEditorProps, SelectableValue } from '@grafana/data';
-import { MCPDataSourceOptions, MCPSecureJsonData } from '../types';
+import { MCPDataSourceOptions, MCPSecureJsonData, MCPArgument } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<MCPDataSourceOptions, MCPSecureJsonData> { }
 
@@ -26,6 +30,41 @@ const LLM_PROVIDER_OPTIONS: SelectableValue[] = [
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
   const { jsonData, secureJsonFields, secureJsonData } = options;
+
+  // State for managing arguments in the UI
+  const [arguments_, setArguments] = useState<MCPArgument[]>([]);
+
+  // Initialize arguments from stored configuration
+  useEffect(() => {
+    const regularArgs = jsonData.arguments || {};
+    const secureArgNames = jsonData.secureArguments || [];
+    
+    const allArgs: MCPArgument[] = [];
+    
+    // Add regular arguments
+    Object.entries(regularArgs).forEach(([key, value]) => {
+      allArgs.push({
+        key,
+        value,
+        isSecure: false,
+      });
+    });
+    
+    // Add secure arguments
+    secureArgNames.forEach((key) => {
+      const secureKey = `arg_${key}`;
+      const isConfigured = secureJsonFields?.[secureKey] || false;
+      const value = isConfigured ? '***' : (secureJsonData?.[secureKey] || '');
+      
+      allArgs.push({
+        key,
+        value,
+        isSecure: true,
+      });
+    });
+    
+    setArguments(allArgs);
+  }, [jsonData.arguments, jsonData.secureArguments, secureJsonFields, secureJsonData]);
 
   // Handler for server URL changes
   const onServerUrlChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -59,8 +98,6 @@ export function ConfigEditor(props: Props) {
       },
     });
   };
-
-
 
   // Handler for timeout changes
   const onTimeoutChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -98,148 +135,112 @@ export function ConfigEditor(props: Props) {
     });
   };
 
-  // Secure field handlers
-  const onAPIKeyChange = (event: ChangeEvent<HTMLInputElement>) => {
+  // Argument management handlers
+  const updateStoredArguments = (newArgs: MCPArgument[]) => {
+    const regularArgs: Record<string, string> = {};
+    const secureArgNames: string[] = [];
+    const newSecureJsonData = { ...secureJsonData };
+    const newSecureJsonFields = { ...secureJsonFields };
+
+    newArgs.forEach((arg) => {
+      if (arg.isSecure) {
+        secureArgNames.push(arg.key);
+        const secureKey = `arg_${arg.key}`;
+        if (arg.value && arg.value !== '***') {
+          newSecureJsonData[secureKey] = arg.value;
+        }
+      } else {
+        regularArgs[arg.key] = arg.value;
+      }
+    });
+
+    // Clean up old secure arguments that are no longer present
+    Object.keys(secureJsonData || {}).forEach((key) => {
+      if (key.startsWith('arg_') && key !== 'llmApiKey') {
+        const argName = key.substring(4); // Remove 'arg_' prefix
+        if (!secureArgNames.includes(argName)) {
+          delete newSecureJsonData[key];
+          delete newSecureJsonFields[key];
+        }
+      }
+    });
+
     onOptionsChange({
       ...options,
-      secureJsonData: {
-        ...secureJsonData,
-        apiKey: event.target.value,
+      jsonData: {
+        ...jsonData,
+        arguments: regularArgs,
+        secureArguments: secureArgNames,
       },
+      secureJsonData: newSecureJsonData,
+      secureJsonFields: newSecureJsonFields,
     });
   };
 
-  const onAuthTokenChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onOptionsChange({
-      ...options,
-      secureJsonData: {
-        ...secureJsonData,
-        authToken: event.target.value,
-      },
-    });
+  const onAddArgument = () => {
+    const newArg: MCPArgument = {
+      key: '',
+      value: '',
+      isSecure: false,
+      isNew: true,
+    };
+    setArguments([...arguments_, newArg]);
   };
 
-  const onUsernameChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onOptionsChange({
-      ...options,
-      secureJsonData: {
-        ...secureJsonData,
-        username: event.target.value,
-      },
-    });
+  const onRemoveArgument = (index: number) => {
+    const newArgs = arguments_.filter((_, i) => i !== index);
+    setArguments(newArgs);
+    updateStoredArguments(newArgs);
   };
 
-  const onPasswordChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onOptionsChange({
-      ...options,
-      secureJsonData: {
-        ...secureJsonData,
-        password: event.target.value,
-      },
-    });
+  const onArgumentKeyChange = (index: number, key: string) => {
+    const newArgs = [...arguments_];
+    newArgs[index] = { ...newArgs[index], key };
+    setArguments(newArgs);
+    
+    if (!newArgs[index].isNew) {
+      updateStoredArguments(newArgs);
+    }
   };
 
-  const onClientIdChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onOptionsChange({
-      ...options,
-      secureJsonData: {
-        ...secureJsonData,
-        clientId: event.target.value,
-      },
-    });
+  const onArgumentValueChange = (index: number, value: string) => {
+    const newArgs = [...arguments_];
+    newArgs[index] = { ...newArgs[index], value };
+    setArguments(newArgs);
+    
+    if (!newArgs[index].isNew) {
+      updateStoredArguments(newArgs);
+    }
   };
 
-  const onClientSecretChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onOptionsChange({
-      ...options,
-      secureJsonData: {
-        ...secureJsonData,
-        clientSecret: event.target.value,
-      },
-    });
+  const onArgumentSecureToggle = (index: number) => {
+    const newArgs = [...arguments_];
+    newArgs[index] = { ...newArgs[index], isSecure: !newArgs[index].isSecure };
+    setArguments(newArgs);
+    
+    if (!newArgs[index].isNew) {
+      updateStoredArguments(newArgs);
+    }
   };
 
-  // Reset handlers for secure fields
-  const onResetAPIKey = () => {
+  const onSaveNewArgument = (index: number) => {
+    const newArgs = [...arguments_];
+    newArgs[index] = { ...newArgs[index], isNew: false };
+    setArguments(newArgs);
+    updateStoredArguments(newArgs);
+  };
+
+  const onResetSecureArgument = (argKey: string) => {
+    const secureKey = `arg_${argKey}`;
     onOptionsChange({
       ...options,
       secureJsonFields: {
         ...secureJsonFields,
-        apiKey: false,
+        [secureKey]: false,
       },
       secureJsonData: {
         ...secureJsonData,
-        apiKey: '',
-      },
-    });
-  };
-
-  const onResetAuthToken = () => {
-    onOptionsChange({
-      ...options,
-      secureJsonFields: {
-        ...secureJsonFields,
-        authToken: false,
-      },
-      secureJsonData: {
-        ...secureJsonData,
-        authToken: '',
-      },
-    });
-  };
-
-  const onResetUsername = () => {
-    onOptionsChange({
-      ...options,
-      secureJsonFields: {
-        ...secureJsonFields,
-        username: false,
-      },
-      secureJsonData: {
-        ...secureJsonData,
-        username: '',
-      },
-    });
-  };
-
-  const onResetPassword = () => {
-    onOptionsChange({
-      ...options,
-      secureJsonFields: {
-        ...secureJsonFields,
-        password: false,
-      },
-      secureJsonData: {
-        ...secureJsonData,
-        password: '',
-      },
-    });
-  };
-
-  const onResetClientId = () => {
-    onOptionsChange({
-      ...options,
-      secureJsonFields: {
-        ...secureJsonFields,
-        clientId: false,
-      },
-      secureJsonData: {
-        ...secureJsonData,
-        clientId: '',
-      },
-    });
-  };
-
-  const onResetClientSecret = () => {
-    onOptionsChange({
-      ...options,
-      secureJsonFields: {
-        ...secureJsonFields,
-        clientSecret: false,
-      },
-      secureJsonData: {
-        ...secureJsonData,
-        clientSecret: '',
+        [secureKey]: '',
       },
     });
   };
@@ -289,11 +290,41 @@ export function ConfigEditor(props: Props) {
     });
   };
 
+  const onSystemPromptChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...jsonData,
+        systemPrompt: event.target.value,
+      },
+    });
+  };
 
+  const onMaxTokensChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(event.target.value, 10);
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...jsonData,
+        maxTokens: isNaN(value) ? undefined : value,
+      },
+    });
+  };
+
+  const onAgentRetriesChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const value = parseInt(event.target.value, 10);
+    onOptionsChange({
+      ...options,
+      jsonData: {
+        ...jsonData,
+        agentRetries: isNaN(value) ? undefined : value,
+      },
+    });
+  };
 
   return (
-    <>
-      <FieldSet label="MCP Server Configuration">
+    <div className="gf-form-group">
+      <FieldSet label="Server Connection">
         <InlineField
           label="Server URL"
           labelWidth={20}
@@ -394,109 +425,84 @@ export function ConfigEditor(props: Props) {
         </InlineFieldRow>
       </FieldSet>
 
-      <FieldSet label="Authentication (Optional)">
-        <InlineField
-          label="API Key"
-          labelWidth={20}
-          tooltip="API key for authentication"
-        >
-          <SecretInput
-            id="config-editor-api-key"
-            isConfigured={secureJsonFields?.apiKey}
-            value={secureJsonData?.apiKey || ''}
-            placeholder="Enter your API key"
-            width={40}
-            onReset={onResetAPIKey}
-            onChange={onAPIKeyChange}
-          />
-        </InlineField>
-
-        <InlineField
-          label="Auth Token"
-          labelWidth={20}
-          tooltip="Bearer token for authentication"
-        >
-          <SecretInput
-            id="config-editor-auth-token"
-            isConfigured={secureJsonFields?.authToken}
-            value={secureJsonData?.authToken || ''}
-            placeholder="Enter your auth token"
-            width={40}
-            onReset={onResetAuthToken}
-            onChange={onAuthTokenChange}
-          />
-        </InlineField>
-
-        <InlineFieldRow>
-          <InlineField
-            label="Username"
-            labelWidth={20}
-            tooltip="Username for basic authentication"
-          >
-            <SecretInput
-              id="config-editor-username"
-              isConfigured={secureJsonFields?.username}
-              value={secureJsonData?.username || ''}
-              placeholder="Username"
-              width={25}
-              onReset={onResetUsername}
-              onChange={onUsernameChange}
-            />
-          </InlineField>
-
-          <InlineField
-            label="Password"
-            labelWidth={20}
-            tooltip="Password for basic authentication"
-          >
-            <SecretInput
-              id="config-editor-password"
-              isConfigured={secureJsonFields?.password}
-              value={secureJsonData?.password || ''}
-              placeholder="Password"
-              width={25}
-              onReset={onResetPassword}
-              onChange={onPasswordChange}
-            />
-          </InlineField>
-        </InlineFieldRow>
-
-        <InlineFieldRow>
-          <InlineField
-            label="Client ID"
-            labelWidth={20}
-            tooltip="OAuth2 client ID"
-          >
-            <SecretInput
-              id="config-editor-client-id"
-              isConfigured={secureJsonFields?.clientId}
-              value={secureJsonData?.clientId || ''}
-              placeholder="Client ID"
-              width={25}
-              onReset={onResetClientId}
-              onChange={onClientIdChange}
-            />
-          </InlineField>
-
-          <InlineField
-            label="Client Secret"
-            labelWidth={20}
-            tooltip="OAuth2 client secret"
-          >
-            <SecretInput
-              id="config-editor-client-secret"
-              isConfigured={secureJsonFields?.clientSecret}
-              value={secureJsonData?.clientSecret || ''}
-              placeholder="Client Secret"
-              width={25}
-              onReset={onResetClientSecret}
-              onChange={onClientSecretChange}
-            />
-          </InlineField>
-        </InlineFieldRow>
+      <FieldSet label="Arguments">
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{ fontSize: '12px', color: '#6e6e6e', marginBottom: '8px' }}>
+            Configure key-value arguments to pass to the MCP server. Use secure arguments for sensitive data like passwords, connection strings, or API keys.
+          </div>
+          
+          {arguments_.map((arg, index) => (
+            <div key={index} style={{ display: 'flex', alignItems: 'center', marginBottom: '8px', gap: '8px' }}>
+              <Input
+                placeholder="Argument key (e.g., host, database)"
+                value={arg.key}
+                onChange={(e: ChangeEvent<HTMLInputElement>) => onArgumentKeyChange(index, e.target.value)}
+                width={20}
+              />
+              
+              {arg.isSecure ? (
+                <SecretInput
+                  placeholder="Secure value"
+                  value={arg.value}
+                  isConfigured={secureJsonFields?.[`arg_${arg.key}`] || false}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => onArgumentValueChange(index, e.target.value)}
+                  onReset={() => onResetSecureArgument(arg.key)}
+                  width={30}
+                />
+              ) : (
+                <Input
+                  placeholder="Value"
+                  value={arg.value}
+                  onChange={(e: ChangeEvent<HTMLInputElement>) => onArgumentValueChange(index, e.target.value)}
+                  width={30}
+                />
+              )}
+              
+              {arg.isNew && (
+                <Checkbox
+                  label="Secure"
+                  value={arg.isSecure}
+                  onChange={() => onArgumentSecureToggle(index)}
+                />
+              )}
+              
+              {!arg.isNew && arg.isSecure && (
+                <div style={{ display: 'flex', alignItems: 'center', minWidth: '60px', fontSize: '12px', color: '#6e6e6e' }}>
+                  🔒 Secure
+                </div>
+              )}
+              
+              {!arg.isNew && !arg.isSecure && (
+                <div style={{ minWidth: '60px' }}></div>
+              )}
+              
+              {arg.isNew ? (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  onClick={() => onSaveNewArgument(index)}
+                  disabled={!arg.key.trim()}
+                >
+                  Save
+                </Button>
+              ) : (
+                <IconButton
+                  name="trash-alt"
+                  size="sm"
+                  onClick={() => onRemoveArgument(index)}
+                  tooltip="Remove argument"
+                />
+              )}
+            </div>
+          ))}
+          
+          <Button size="sm" variant="secondary" onClick={onAddArgument}>
+            Add Argument
+          </Button>
+        </div>
       </FieldSet>
 
-      <FieldSet label="LLM Configuration">
+      <FieldSet label="Agent Configuration">
         <InlineField
           label="LLM Provider"
           labelWidth={20}
@@ -543,12 +549,61 @@ export function ConfigEditor(props: Props) {
           </InlineField>
         )}
 
+        <InlineField
+          label="System Prompt"
+          labelWidth={20}
+          tooltip="System prompt that will always be sent to the LLM to set context and behavior"
+        >
+          <TextArea
+            id="config-editor-system-prompt"
+            onChange={onSystemPromptChange}
+            value={jsonData.systemPrompt || ''}
+            placeholder="You are an intelligent agent that helps users query and analyze data using available tools. Be helpful, accurate, and concise in your responses."
+            rows={3}
+            cols={60}
+          />
+        </InlineField>
+
+        <InlineField
+          label="Max Tokens"
+          labelWidth={20}
+          tooltip="Maximum number of tokens the LLM can generate in a single response (1-4000)"
+        >
+          <Input
+            id="config-editor-max-tokens"
+            type="number"
+            onChange={onMaxTokensChange}
+            value={jsonData.maxTokens || 1000}
+            placeholder="1000"
+            width={15}
+            min={1}
+            max={4000}
+          />
+        </InlineField>
+
+        <InlineField
+          label="Agent Retries"
+          labelWidth={20}
+          tooltip="Number of retry attempts when agent calls fail due to syntax errors or other issues"
+        >
+          <Input
+            id="config-editor-agent-retries"
+            type="number"
+            onChange={onAgentRetriesChange}
+            value={jsonData.agentRetries || 5}
+            placeholder="5"
+            width={15}
+            min={1}
+            max={10}
+          />
+        </InlineField>
+
         {jsonData.llmProvider === 'mock' && (
           <div style={{ marginTop: '8px', padding: '8px', backgroundColor: '#f0f0f0', borderRadius: '4px', fontSize: '12px' }}>
             <strong>Mock Provider:</strong> No API key required. This provider generates simple responses for testing purposes.
           </div>
         )}
       </FieldSet>
-    </>
+    </div>
   );
 }

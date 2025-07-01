@@ -12,17 +12,17 @@ type MCPDataSourceSettings struct {
 	StreamPath        string `json:"streamPath"`        // path for stream transport (default: "/stream")
 	ConnectionTimeout int    `json:"connectionTimeout"` // timeout in seconds
 
-	// Authentication settings
-	AuthType      string            `json:"authType"` // "none", "basic", "bearer", "oauth"
-	Username      string            `json:"username"`
-	Password      string            `json:"password"`
-	BearerToken   string            `json:"bearerToken"`
-	CustomHeaders map[string]string `json:"customHeaders"`
+	// Arguments to pass to MCP server
+	Arguments       map[string]string `json:"arguments"`       // regular arguments (e.g., database name, host)
+	SecureArguments []string          `json:"secureArguments"` // names of arguments that are stored securely
 
-	// LLM settings for natural language processing
-	LLMProvider string `json:"llmProvider"` // "openai", "anthropic", "azure"
-	LLMModel    string `json:"llmModel"`    // model name (e.g., "gpt-4", "claude-3-sonnet")
-	LLMAPIKey   string `json:"llmApiKey"`   // API key for LLM service
+	// Agent settings for natural language processing
+	LLMProvider  string `json:"llmProvider"`  // "openai", "anthropic", "azure"
+	LLMModel     string `json:"llmModel"`     // model name (e.g., "gpt-4", "claude-3-sonnet")
+	LLMAPIKey    string `json:"llmApiKey"`    // API key for LLM service
+	SystemPrompt string `json:"systemPrompt"` // system prompt always sent to LLM
+	MaxTokens    int    `json:"maxTokens"`    // maximum tokens for LLM responses
+	AgentRetries int    `json:"agentRetries"` // number of retry attempts for agent calls
 
 	// Advanced settings
 	MaxRetries        int  `json:"maxRetries"`
@@ -54,6 +54,11 @@ type MCPQuery struct {
 	// Prompt query
 	PromptName      string            `json:"promptName"`
 	PromptArguments map[string]string `json:"promptArguments"`
+
+	// Time range options
+	UseDashboardTimeRange bool   `json:"useDashboardTimeRange"` // whether to include dashboard time range
+	TimeRangeFrom         string `json:"timeRangeFrom"`         // ISO 8601 timestamp for range start
+	TimeRangeTo           string `json:"timeRangeTo"`           // ISO 8601 timestamp for range end
 
 	// Advanced options
 	Timeout       int                    `json:"timeout"`       // query timeout in seconds
@@ -177,4 +182,28 @@ func (s *MCPDataSourceSettings) GetMaxMessageSize() int {
 		return 1024 * 1024 // 1MB default
 	}
 	return s.MaxMessageSize
+}
+
+// GetAgentRetries returns the agent retries with a default value
+func (s *MCPDataSourceSettings) GetAgentRetries() int {
+	if s.AgentRetries <= 0 {
+		return 5 // Default to 5 retries
+	}
+	return s.AgentRetries
+}
+
+// GetSystemPrompt returns the system prompt, with a default if empty
+func (s *MCPDataSourceSettings) GetSystemPrompt() string {
+	if s.SystemPrompt == "" {
+		return "You are an intelligent agent that helps users query and analyze data using available tools. Be helpful, accurate, and concise in your responses."
+	}
+	return s.SystemPrompt
+}
+
+// GetMaxTokens returns the max tokens with a default value
+func (s *MCPDataSourceSettings) GetMaxTokens() int {
+	if s.MaxTokens <= 0 {
+		return 1000 // Default to 1000 tokens
+	}
+	return s.MaxTokens
 }

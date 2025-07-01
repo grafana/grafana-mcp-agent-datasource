@@ -46,13 +46,22 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 
 	// Read secure fields from DecryptedSecureJSONData
 	if settings.DecryptedSecureJSONData != nil {
+		// LLM API Key
 		if llmApiKey, exists := settings.DecryptedSecureJSONData["llmApiKey"]; exists {
 			config.LLMAPIKey = llmApiKey
 		}
-		// Add other secure fields as needed
-		if apiKey, exists := settings.DecryptedSecureJSONData["apiKey"]; exists {
-			// Map to existing auth fields if needed
-			_ = apiKey
+
+		// Handle secure arguments
+		if config.Arguments == nil {
+			config.Arguments = make(map[string]string)
+		}
+
+		// Load secure arguments from DecryptedSecureJSONData
+		for _, argName := range config.SecureArguments {
+			secureKey := fmt.Sprintf("arg_%s", argName)
+			if argValue, exists := settings.DecryptedSecureJSONData[secureKey]; exists {
+				config.Arguments[argName] = argValue
+			}
 		}
 	}
 
@@ -63,7 +72,18 @@ func NewDatasource(ctx context.Context, settings backend.DataSourceInstanceSetti
 		"timeout", config.ConnectionTimeout,
 		"llmProvider", config.LLMProvider,
 		"llmModel", config.LLMModel,
-		"hasLLMApiKey", config.LLMAPIKey != "")
+		"hasLLMApiKey", config.LLMAPIKey != "",
+		"regularArgs", len(config.Arguments),
+		"secureArgs", len(config.SecureArguments))
+
+	// Log argument keys (not values for security)
+	if len(config.Arguments) > 0 {
+		argKeys := make([]string, 0, len(config.Arguments))
+		for key := range config.Arguments {
+			argKeys = append(argKeys, key)
+		}
+		log.DefaultLogger.Info("MCP arguments configured", "keys", argKeys)
+	}
 
 	return &Datasource{
 		settings:       config,
@@ -230,9 +250,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 	return response, nil
 }
 
-func (d *Datasource) query(ctx context.Context, pCtx backend.PluginContext, query backend.DataQuery) backend.DataResponse {
-	var response backend.DataResponse
-
+func (d *Datasource) query(ctx context.Context, _ backend.PluginContext, query backend.DataQuery) backend.DataResponse {
 	// Unmarshal the JSON into our query model.
 	var qm models.MCPQuery
 
@@ -240,22 +258,27 @@ func (d *Datasource) query(ctx context.Context, pCtx backend.PluginContext, quer
 		return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("json unmarshal: %v", err.Error()))
 	}
 
+	// Extract time range from Grafana request if user wants to use dashboard time range
+	if qm.UseDashboardTimeRange {
+		qm.TimeRangeFrom = query.TimeRange.From.Format("2006-01-02T15:04:05Z07:00")
+		qm.TimeRangeTo = query.TimeRange.To.Format("2006-01-02T15:04:05Z07:00")
+		d.logger.Info("Using dashboard time range", "from", qm.TimeRangeFrom, "to", qm.TimeRangeTo)
+	}
+
 	// Execute the query based on type
 	switch qm.QueryType {
 	case "natural_language":
-		return d.executeNaturalLanguageQuery(ctx, qm)
+		return d.executeQuery(ctx, qm)
 	case "tool_call":
 		return d.executeToolCall(ctx, qm)
 	case "list_tools":
 		return d.listTools(ctx)
 	default:
-		return backend.ErrDataResponse(backend.StatusBadRequest, fmt.Sprintf("unknown query type: %s", qm.QueryType))
+		return d.executeQuery(ctx, qm)
 	}
-
-	return response
 }
 
-func (d *Datasource) executeNaturalLanguageQuery(ctx context.Context, query models.MCPQuery) backend.DataResponse {
+func (d *Datasource) executeQuery(ctx context.Context, query models.MCPQuery) backend.DataResponse {
 	d.logger.Info("Executing natural language query", "query", query.Query)
 
 	if query.Query == "" {
@@ -276,115 +299,193 @@ func (d *Datasource) executeNaturalLanguageQuery(ctx context.Context, query mode
 		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to create agent: %v", err))
 	}
 
-	// Process the natural language query using the agent
+	// Process the natural language query using the agent with structured results
 	queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second) // Longer timeout for LLM processing
 	defer cancel()
 
-	result, err := agent.ProcessQuery(queryCtx, query.Query)
+	result, err := agent.ProcessQueryStructured(queryCtx, query.Query, query.ToolName, query.TimeRangeFrom, query.TimeRangeTo)
 	if err != nil {
 		d.logger.Error("Failed to process natural language query", "query", query.Query, "error", err)
 		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to process query: %v", err))
 	}
 
-	// Create data frames from the agent result
-	frames := []*data.Frame{}
-
-	// Main result frame
-	mainFrame := data.NewFrame("natural_language_result")
-
-	// Create fields with single values
-	queryField := data.NewField("query", nil, []string{})
-	queryField.Append(result.Query)
-
-	summaryField := data.NewField("summary", nil, []string{})
-	summaryField.Append(result.Summary)
-
-	toolCallsCountField := data.NewField("tool_calls_count", nil, []string{})
-	toolCallsCountField.Append(fmt.Sprintf("%d", len(result.ToolCalls)))
-
-	processedAtField := data.NewField("processed_at", nil, []time.Time{})
-	processedAtField.Append(result.ProcessedAt)
-
-	mainFrame.Fields = append(mainFrame.Fields,
-		queryField,
-		summaryField,
-		toolCallsCountField,
-		processedAtField,
-	)
-
-	mainFrame.Meta = &data.FrameMeta{
-		Custom: map[string]interface{}{
-			"queryType":      "natural_language",
-			"originalQuery":  query.Query,
-			"toolCallsCount": len(result.ToolCalls),
-			"summary":        result.Summary,
-		},
+	if !result.Success {
+		d.logger.Error("Failed to process natural language query", "query", query.Query, "error", result.ErrorMsg)
+		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to process query: %v", result.ErrorMsg))
 	}
-	frames = append(frames, mainFrame)
 
-	// Tool calls frame (if any tools were called)
-	if len(result.ToolCalls) > 0 {
-		toolCallFrame := data.NewFrame("tool_calls")
+	// Create a single data frame from the structured result
+	frame := data.NewFrame("query_results")
 
-		toolNames := make([]string, len(result.ToolCalls))
-		reasonings := make([]string, len(result.ToolCalls))
-		arguments := make([]string, len(result.ToolCalls))
+	// Handle case where we have no data
+	if len(result.Data) == 0 {
+		// Create a frame with just the summary information
+		// frame.Fields = append(frame.Fields,
+		// 	data.NewField("message", nil, []string{result.Summary}),
+		// 	data.NewField("query", nil, []string{result.Query}),
+		// 	data.NewField("success", nil, []bool{result.Success}),
+		// )
 
-		for i, toolCall := range result.ToolCalls {
-			toolNames[i] = toolCall.ToolName
-			reasonings[i] = toolCall.Reasoning
-			argsJSON, _ := json.Marshal(toolCall.Arguments)
-			arguments[i] = string(argsJSON)
+		frame.Meta = &data.FrameMeta{
+			Custom: map[string]interface{}{
+				"queryType":     "natural_language",
+				"originalQuery": query.Query,
+				"summary":       result.Summary,
+			},
+		}
+		args := ""
+		arguments, ok := result.Metadata["arguments"]
+		if ok {
+			args = fmt.Sprintf("%v", arguments)
+		}
+		frame.Meta.ExecutedQueryString = args
+		frame.Meta.Notices = append(frame.Meta.Notices, data.Notice{
+			Severity: data.NoticeSeverityInfo,
+			Text:     result.Summary,
+		})
+	} else {
+		// Create fields based on the structured data
+		// Initialize field slices based on columns
+		fieldData := make(map[string][]interface{})
+
+		// Initialize all fields
+		for _, col := range result.Columns {
+			fieldData[col] = make([]interface{}, 0, len(result.Data))
 		}
 
-		toolCallFrame.Fields = append(toolCallFrame.Fields,
-			data.NewField("tool_name", nil, toolNames),
-			data.NewField("reasoning", nil, reasonings),
-			data.NewField("arguments", nil, arguments),
-		)
-
-		frames = append(frames, toolCallFrame)
-	}
-
-	// Tool results frame (if any tools were executed)
-	if len(result.Results) > 0 {
-		resultsFrame := data.NewFrame("tool_results")
-
-		toolNames := make([]string, len(result.Results))
-		successes := make([]bool, len(result.Results))
-		resultData := make([]string, len(result.Results))
-		errors := make([]string, len(result.Results))
-
-		for i, toolResult := range result.Results {
-			toolNames[i] = toolResult.ToolName
-			successes[i] = toolResult.Success
-
-			if toolResult.Data != nil {
-				if str, ok := toolResult.Data.(string); ok {
-					resultData[i] = str
+		// Populate field data
+		for _, row := range result.Data {
+			for _, col := range result.Columns {
+				if val, exists := row[col]; exists {
+					fieldData[col] = append(fieldData[col], val)
 				} else {
-					dataJSON, _ := json.Marshal(toolResult.Data)
-					resultData[i] = string(dataJSON)
+					fieldData[col] = append(fieldData[col], nil)
+				}
+			}
+		}
+
+		// Create fields for the frame
+		for _, col := range result.Columns {
+			// Determine the field type based on the first non-nil value
+			var field *data.Field
+			values := fieldData[col]
+
+			if len(values) > 0 {
+				// Find first non-nil value to determine type
+				var sampleValue interface{}
+				for _, v := range values {
+					if v != nil {
+						sampleValue = v
+						break
+					}
+				}
+
+				switch sampleValue.(type) {
+				case string:
+					stringValues := make([]string, len(values))
+					for i, v := range values {
+						if v != nil {
+							stringValues[i] = fmt.Sprintf("%v", v)
+						}
+					}
+					field = data.NewField(col, nil, stringValues)
+				case bool:
+					boolValues := make([]*bool, len(values))
+					for i, v := range values {
+						if v != nil {
+							if b, ok := v.(bool); ok {
+								boolValues[i] = &b
+							}
+						}
+					}
+					field = data.NewField(col, nil, boolValues)
+				case int, int32, int64:
+					floatValues := make([]*float64, len(values))
+					for i, v := range values {
+						if v != nil {
+							if val, ok := convertToFloat64(v); ok {
+								floatValues[i] = &val
+							}
+						}
+					}
+					field = data.NewField(col, nil, floatValues)
+				case float32, float64:
+					floatValues := make([]*float64, len(values))
+					for i, v := range values {
+						if v != nil {
+							if val, ok := convertToFloat64(v); ok {
+								floatValues[i] = &val
+							}
+						}
+					}
+					field = data.NewField(col, nil, floatValues)
+				default:
+					// Default to string
+					stringValues := make([]string, len(values))
+					for i, v := range values {
+						if v != nil {
+							stringValues[i] = fmt.Sprintf("%v", v)
+						}
+					}
+					field = data.NewField(col, nil, stringValues)
 				}
 			} else {
-				resultData[i] = ""
+				// Empty field, default to string
+				field = data.NewField(col, nil, []string{})
 			}
 
-			errors[i] = toolResult.Error
+			frame.Fields = append(frame.Fields, field)
 		}
+	}
 
-		resultsFrame.Fields = append(resultsFrame.Fields,
-			data.NewField("tool_name", nil, toolNames),
-			data.NewField("success", nil, successes),
-			data.NewField("result_data", nil, resultData),
-			data.NewField("error", nil, errors),
-		)
+	if frame.Meta == nil {
+		// Add comprehensive metadata
+		frame.Meta = &data.FrameMeta{
+			Custom: map[string]interface{}{
+				"queryType":     "natural_language",
+				"originalQuery": query.Query,
+				"summary":       result.Summary,
+				"success":       result.Success,
+				"rowCount":      len(result.Data),
+				"columnCount":   len(result.Columns),
+			},
+		}
+	}
 
-		frames = append(frames, resultsFrame)
+	// Add all metadata from the structured result
+	if result.Metadata != nil {
+		customMeta := frame.Meta.Custom.(map[string]interface{})
+		for key, value := range result.Metadata {
+			customMeta[key] = value
+		}
+	}
+
+	// Add error information if present
+	if result.ErrorMsg != "" {
+		customMeta := frame.Meta.Custom.(map[string]interface{})
+		customMeta["error"] = result.ErrorMsg
 	}
 
 	return backend.DataResponse{
-		Frames: frames,
+		Frames: []*data.Frame{frame},
+	}
+}
+
+// Helper function to convert various numeric types to float64
+func convertToFloat64(val interface{}) (float64, bool) {
+	switch v := val.(type) {
+	case int:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case float32:
+		return float64(v), true
+	case float64:
+		return v, true
+	default:
+		return 0, false
 	}
 }
 
@@ -596,7 +697,12 @@ func (d *Datasource) handleToolsResource(ctx context.Context, req *backend.CallR
 		})
 	}
 
-	response, err := json.Marshal(tools.Tools)
+	// Create response with tools wrapped in an object to match frontend expectations
+	toolsResponse := map[string]interface{}{
+		"tools": tools.Tools,
+	}
+
+	response, err := json.Marshal(toolsResponse)
 	if err != nil {
 		return sender.Send(&backend.CallResourceResponse{
 			Status: 500,

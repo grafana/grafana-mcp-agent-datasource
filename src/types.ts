@@ -10,12 +10,14 @@ export interface MCPQuery extends DataQuery {
   arguments?: Record<string, any>;      // Additional arguments for the tool
   maxResults?: number;                  // Maximum number of results to return
   format?: string;                      // Output format preference
+  useDashboardTimeRange?: boolean;      // Whether to include dashboard time range in queries
 }
 
 export const DEFAULT_QUERY: Partial<MCPQuery> = {
   query: '',
   maxResults: 100,
   format: 'auto',
+  useDashboardTimeRange: true, // Default to using dashboard time range
 };
 
 /**
@@ -75,24 +77,38 @@ export interface MCPDataSourceOptions extends DataSourceJsonData {
   maxRetries?: number;                  // Maximum retry attempts
   retryInterval?: number;               // Retry interval in seconds
   
-  // LLM Configuration
+  // Arguments to pass to MCP server
+  arguments?: Record<string, string>;   // Regular arguments (e.g., database name, host)
+  secureArguments?: string[];           // Names of arguments that are stored securely
+  
+  // Agent Configuration
   llmProvider?: 'anthropic' | 'openai' | 'mock';  // LLM provider for natural language processing
   llmModel?: string;                    // LLM model name (e.g., claude-3-5-sonnet-20241022, gpt-4)
+  systemPrompt?: string;                // System prompt always sent to LLM
+  maxTokens?: number;                   // Maximum tokens for LLM responses
+  agentRetries?: number;                // Number of retry attempts for agent calls
 }
 
 /**
  * Secure/encrypted configuration data
  */
 export interface MCPSecureJsonData {
-  apiKey?: string;
-  authToken?: string;
-  username?: string;
-  password?: string;
-  clientId?: string;
-  clientSecret?: string;
-  
   // LLM API Keys
   llmApiKey?: string;                   // API key for LLM provider (Anthropic, OpenAI, etc.)
+  
+  // Dynamic secure arguments - these are stored with 'arg_' prefix
+  // e.g., if user adds secure argument 'password', it's stored as 'arg_password'
+  [key: string]: string | undefined;
+}
+
+/**
+ * Argument configuration for the UI
+ */
+export interface MCPArgument {
+  key: string;
+  value: string;
+  isSecure: boolean;
+  isNew?: boolean;  // for UI state management
 }
 
 /**

@@ -12,7 +12,8 @@ import {
   HorizontalGroup,
   VerticalGroup,
   Card,
-  IconButton
+  IconButton,
+  Checkbox
 } from '@grafana/ui';
 import { QueryEditorProps, SelectableValue } from '@grafana/data';
 import { DataSource } from '../datasource';
@@ -29,6 +30,7 @@ type Props = QueryEditorProps<DataSource, MCPQuery, MCPDataSourceOptions>;
 export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) {
   const [availableTools, setAvailableTools] = useState<MCPTool[]>([]);
   const [isLoadingTools, setIsLoadingTools] = useState(false);
+  const [toolsError, setToolsError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
 
@@ -38,27 +40,31 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     query: query.query || '',
     maxResults: query.maxResults || 100,
     format: query.format || 'auto',
+    useDashboardTimeRange: query.useDashboardTimeRange ?? true, // Default to true
   };
 
-  // Load available tools on component mount
+  // Load available tools on component mount and when datasource changes
   useEffect(() => {
     loadAvailableTools();
-  }, []);
+  }, [datasource]);
 
   const loadAvailableTools = async () => {
     setIsLoadingTools(true);
+    setToolsError(null);
     try {
-      // In a real implementation, this would call the datasource to get available tools
-      // For now, we'll use mock data
-      const mockTools: MCPTool[] = [
-        { name: 'search', description: 'Search for information' },
-        { name: 'analyze', description: 'Analyze data' },
-        { name: 'query_database', description: 'Query database' },
-        { name: 'fetch_data', description: 'Fetch external data' },
-      ];
-      setAvailableTools(mockTools);
+      // Call the datasource to get real available tools from MCP server
+      const tools = await datasource.getAvailableTools();
+      setAvailableTools(tools);
+      
+      if (tools.length === 0) {
+        setToolsError('No tools available from MCP server');
+      }
     } catch (error) {
       console.error('Failed to load available tools:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      setToolsError(`Failed to load tools: ${errorMessage}`);
+      // Fallback to empty array on error
+      setAvailableTools([]);
     } finally {
       setIsLoadingTools(false);
     }
@@ -94,6 +100,14 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     onChange({ 
       ...currentQuery, 
       format: option.value 
+    });
+  };
+
+  // Dashboard time range toggle handler
+  const onUseDashboardTimeRangeChange = (event: ChangeEvent<HTMLInputElement>) => {
+    onChange({
+      ...currentQuery,
+      useDashboardTimeRange: event.target.checked,
     });
   };
 
@@ -149,7 +163,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     <VerticalGroup spacing="md">
       {/* Main Query Section */}
       <Card>
-        <Card.Heading>Natural Language Query</Card.Heading>
           <Stack direction="column" gap={2}>
             <InlineField 
               label="Query" 
@@ -190,15 +203,33 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
 
             <HorizontalGroup spacing="md">
               <InlineField label="Tool" labelWidth={12} tooltip="Select a specific MCP tool or let the system auto-select">
-                <Select
-                  options={toolOptions}
-                  value={currentQuery.toolName}
-                  onChange={onToolChange}
-                  placeholder="Auto-select tool"
-                  width={25}
-                  isLoading={isLoadingTools}
-                />
+                <HorizontalGroup spacing="xs">
+                  <Select
+                    options={toolOptions}
+                    value={currentQuery.toolName}
+                    onChange={onToolChange}
+                    placeholder="Auto-select tool"
+                    width={25}
+                    isLoading={isLoadingTools}
+                  />
+                  <IconButton
+                    name="sync"
+                    size="md"
+                    tooltip="Refresh available tools"
+                    onClick={loadAvailableTools}
+                    disabled={isLoadingTools}
+                  />
+                </HorizontalGroup>
               </InlineField>
+              
+              {/* Tools status indicator */}
+              {toolsError ? (
+                <Badge color="red" text={toolsError} />
+              ) : availableTools.length > 0 ? (
+                <Badge color="green" text={`${availableTools.length} tools available`} />
+              ) : !isLoadingTools ? (
+                <Badge color="orange" text="No tools loaded" />
+              ) : null}
 
               <Button 
                 variant="secondary" 
@@ -257,7 +288,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       {/* Advanced Options */}
       {showAdvanced && (
         <Card>
-          <Card.Heading>Advanced Options</Card.Heading>
           <HorizontalGroup spacing="md">
             <InlineField 
               label="Max Results" 
@@ -286,6 +316,19 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                 value={currentQuery.format}
                 onChange={onFormatChange}
                 width={20}
+              />
+            </InlineField>
+          </HorizontalGroup>
+
+          <HorizontalGroup spacing="md">
+            <InlineField 
+              label="Use Dashboard Time" 
+              labelWidth={24}
+              tooltip="Include the dashboard's selected time range in queries when no time is specified"
+            >
+              <Checkbox
+                value={currentQuery.useDashboardTimeRange}
+                onChange={onUseDashboardTimeRangeChange}
               />
             </InlineField>
           </HorizontalGroup>
