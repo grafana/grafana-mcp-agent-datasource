@@ -147,21 +147,36 @@ func (a *Agent) ProcessQuery(ctx context.Context, query string) (*QueryResult, e
 
 // ProcessQueryStructured processes a natural language query and returns structured results for dataframes
 // If toolName is provided, it will use that tool directly instead of using LLM to select one
-// The query parameter contains the full query information including time range
-func (a *Agent) ProcessQueryStructured(ctx context.Context, query string, toolName string, timeRangeFrom, timeRangeTo string) (*StructuredQueryResult, error) {
+// If generatedToolCall is provided and matches the current query, it will be used to avoid LLM calls
+// If cachedTools is provided, it will be used instead of fetching tools from the server
+func (a *Agent) ProcessQueryStructured(ctx context.Context, query string, toolName string, timeRangeFrom, timeRangeTo string, generatedToolCall *models.GeneratedToolCall, cachedTools []mcp.Tool) (*StructuredQueryResult, error) {
 	a.logger.Info("Processing natural language query for structured results", "query", query)
 
-	// 1. Get available tools from MCP server
-	tools, err := a.getAvailableTools(ctx)
-	if err != nil {
-		return &StructuredQueryResult{
-			Query:    query,
-			Success:  false,
-			ErrorMsg: fmt.Sprintf("Failed to get available tools: %v", err),
-		}, nil
-	}
+	// 1. Get available tools (only if we need them for LLM tool selection)
+	var tools []mcp.Tool
+	var err error
 
-	a.logger.Info("Found available tools", "count", len(tools))
+	// Skip tool fetching if we have a cached generated tool call that matches the query
+	needTools := !(generatedToolCall != nil && generatedToolCall.OriginalQuery == query)
+
+	if needTools {
+		if len(cachedTools) > 0 {
+			tools = cachedTools
+			a.logger.Info("Using cached tools", "count", len(tools))
+		} else {
+			tools, err = a.getAvailableTools(ctx)
+			if err != nil {
+				return &StructuredQueryResult{
+					Query:    query,
+					Success:  false,
+					ErrorMsg: fmt.Sprintf("Failed to get available tools: %v", err),
+				}, nil
+			}
+			a.logger.Info("Fetched tools from server", "count", len(tools))
+		}
+	} else {
+		a.logger.Info("Skipping tool fetching - using cached generated tool call")
+	}
 
 	// 2. Determine which tool to use
 	maxRetries := a.settings.GetAgentRetries()
@@ -170,8 +185,16 @@ func (a *Agent) ProcessQueryStructured(ctx context.Context, query string, toolNa
 	var lastError string
 	var actualAttempts int
 
-	// Check if user has pre-selected a tool
-	if toolName != "" {
+	// Check if we have a cached generated tool call that matches the current query
+	if generatedToolCall != nil && generatedToolCall.OriginalQuery == query {
+		a.logger.Info("Using cached generated tool call", "toolName", generatedToolCall.ToolName, "query", query)
+		toolCall = &ToolCall{
+			ToolName:  generatedToolCall.ToolName,
+			Arguments: generatedToolCall.Arguments,
+			Reasoning: "Using cached tool call from previous execution",
+		}
+		maxRetries = 1 // Skip retry loop since we're using cached tool call
+	} else if toolName != "" {
 		a.logger.Info("Using user-selected tool", "toolName", toolName)
 
 		// Validate that the selected tool exists
@@ -357,6 +380,15 @@ Arguments JSON:`, query, selectedTool.Name, selectedTool.Description)
 	structuredResult.Metadata["retry_attempts"] = maxRetries
 	structuredResult.Metadata["attempts_made"] = actualAttempts
 	structuredResult.Metadata["arguments"] = toolCall.Arguments
+
+	// Store the generated tool call for future cache use (only if not using cached or user-selected tool)
+	if generatedToolCall == nil && toolName == "" {
+		structuredResult.Metadata["generated_tool_call"] = map[string]interface{}{
+			"toolName":      toolCall.ToolName,
+			"arguments":     toolCall.Arguments,
+			"originalQuery": query,
+		}
+	}
 
 	if !toolResult.Success {
 		structuredResult.Metadata["tool_error"] = toolResult.Error

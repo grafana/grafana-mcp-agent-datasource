@@ -52,3 +52,5 @@ ci/
 .env.production.local
 
 grafana-*-app
+
+mcp-datasource

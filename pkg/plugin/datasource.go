@@ -218,6 +218,40 @@ func (d *Datasource) getMCPClient() (*client.Client, error) {
 	return d.mcpClient, nil
 }
 
+// getStoredToolsAsMCP converts stored tools to mcp.Tool format for the agent
+func (d *Datasource) getStoredToolsAsMCP() []mcp.Tool {
+	mcpTools := make([]mcp.Tool, len(d.settings.Tools))
+	for i, tool := range d.settings.Tools {
+		// Convert map[string]interface{} back to ToolInputSchema
+		var inputSchema mcp.ToolInputSchema
+		if tool.Schema != nil {
+			schemaBytes, _ := json.Marshal(tool.Schema)
+			json.Unmarshal(schemaBytes, &inputSchema)
+		}
+
+		mcpTools[i] = mcp.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: inputSchema,
+		}
+	}
+	if len(mcpTools) == 0 {
+		// Fetch tools from server
+		mcpClient, err := d.getMCPClient()
+		if err != nil {
+			d.logger.Error("Failed to get MCP client", "error", err)
+			return nil
+		}
+		tools, err := mcpClient.ListTools(context.Background(), mcp.ListToolsRequest{})
+		if err != nil {
+			d.logger.Error("Failed to list tools", "error", err)
+			return nil
+		}
+		mcpTools = tools.Tools
+	}
+	return mcpTools
+}
+
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
 // created. As soon as datasource settings change detected by SDK old datasource instance will
 // be disposed and a new one will be created using NewSampleDatasource factory function.
@@ -303,7 +337,10 @@ func (d *Datasource) executeQuery(ctx context.Context, query models.MCPQuery) ba
 	queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second) // Longer timeout for LLM processing
 	defer cancel()
 
-	result, err := agent.ProcessQueryStructured(queryCtx, query.Query, query.ToolName, query.TimeRangeFrom, query.TimeRangeTo)
+	// Get stored tools to pass to the agent
+	storedTools := d.getStoredToolsAsMCP()
+
+	result, err := agent.ProcessQueryStructured(queryCtx, query.Query, query.ToolName, query.TimeRangeFrom, query.TimeRangeTo, query.GeneratedToolCall, storedTools)
 	if err != nil {
 		d.logger.Error("Failed to process natural language query", "query", query.Query, "error", err)
 		return backend.ErrDataResponse(backend.StatusInternal, fmt.Sprintf("failed to process query: %v", err))
@@ -676,6 +713,38 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 }
 
 func (d *Datasource) handleToolsResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) error {
+	// Check if we have stored tools from configuration
+	if len(d.settings.Tools) > 0 {
+		d.logger.Info("Using stored tools for tools resource", "count", len(d.settings.Tools))
+
+		// Convert stored tools to mcp.Tool format for response
+		mcpTools := d.getStoredToolsAsMCP()
+
+		// Create response with tools wrapped in an object to match frontend expectations
+		toolsResponse := map[string]interface{}{
+			"tools": mcpTools,
+		}
+
+		response, err := json.Marshal(toolsResponse)
+		if err != nil {
+			return sender.Send(&backend.CallResourceResponse{
+				Status: 500,
+				Body:   []byte(fmt.Sprintf("Failed to marshal stored tools: %v", err)),
+			})
+		}
+
+		return sender.Send(&backend.CallResourceResponse{
+			Status: 200,
+			Headers: map[string][]string{
+				"Content-Type": {"application/json"},
+			},
+			Body: response,
+		})
+	}
+
+	// If no stored tools, try to fetch from server (fallback for development/testing)
+	d.logger.Warn("No stored tools available, fetching from server as fallback")
+
 	mcpClient, err := d.getMCPClient()
 	if err != nil {
 		d.logger.Error("Failed to get MCP client", "error", err)

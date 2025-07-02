@@ -321,6 +321,21 @@ func (a *AnthropicProvider) tryLocalStructuring(query string, toolResults []Tool
 		}
 	}
 
+	if strings.Contains(dataStr, "No logs found") {
+		return &StructuredQueryResult{
+			Query:   query,
+			Data:    []map[string]interface{}{},
+			Columns: []string{},
+			Summary: "No logs found",
+			Success: true,
+			Metadata: map[string]interface{}{
+				"tool_count":    1,
+				"processed_at":  time.Now(),
+				"local_parsing": true,
+			},
+		}
+	}
+
 	// If data is small enough and looks simple, we can let LLM handle it
 	if len(dataStr) <= 1000 && strings.Count(dataStr, "\n") <= 20 {
 		return nil // Let LLM handle small, simple data
@@ -465,7 +480,25 @@ func (a *AnthropicProvider) tryParseLogResult(query, toolName, dataStr string) *
 
 		var logEntry map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &logEntry); err != nil {
-			continue // Skip non-JSON lines
+			// continue // Skip non-JSON lines
+		}
+
+		if logEntry == nil {
+			// probably raw log line
+			// timestamp, {lables}, message
+			// 2023-12-07T10:30:45Z {job=myapp,level=info} This is a log message
+
+			// split line into timestamp, labels, message
+			parts := strings.Split(line, " ")
+			timestamp := parts[0]
+			labels := parts[1]
+			message := strings.Join(parts[2:], " ")
+
+			logEntry = map[string]interface{}{
+				"timestamp": timestamp,
+				"labels":    labels,
+				"message":   message,
+			}
 		}
 
 		// Extract columns from first entry

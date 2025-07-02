@@ -30,6 +30,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const [isLoadingTools, setIsLoadingTools] = useState(false);
   const [toolsError, setToolsError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [recentlyUpdated, setRecentlyUpdated] = useState(false);
 
   // Initialize query with defaults if needed
   const currentQuery: MCPQuery = {
@@ -45,12 +46,37 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     loadAvailableTools();
   }, [datasource]);
 
-  const loadAvailableTools = async () => {
+  // Subscribe to query updates from datasource
+  useEffect(() => {
+    const subscription = datasource.queryUpdates$.subscribe((updateEvent) => {
+      // Only update if this is for the current query
+      if (updateEvent.refId === query.refId && updateEvent.generatedToolCall) {
+        const updatedQuery = {
+          ...currentQuery,
+          generatedToolCall: updateEvent.generatedToolCall,
+          toolName: updateEvent.generatedToolCall.toolName, // Auto-select the tool that was used
+        };
+        
+        onChange(updatedQuery);
+        
+        // Show temporary update indicator
+        setRecentlyUpdated(true);
+        const timer = setTimeout(() => setRecentlyUpdated(false), 3000); // Clear after 3 seconds
+        
+        return () => clearTimeout(timer);
+      }
+    });
+
+    // Cleanup subscription on unmount
+    return () => subscription.unsubscribe();
+  }, [query.refId, currentQuery, onChange, datasource]);
+
+  const loadAvailableTools = async (forceRefresh = false) => {
     setIsLoadingTools(true);
     setToolsError(null);
     try {
       // Call the datasource to get real available tools from MCP server
-      const tools = await datasource.getAvailableTools();
+      const tools = await datasource.getAvailableTools(forceRefresh);
       setAvailableTools(tools);
       
       if (tools.length === 0) {
@@ -67,12 +93,26 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
     }
   };
 
+  // Handler for the refresh button click
+  const handleRefreshTools = () => {
+    loadAvailableTools(true); // Force refresh when user clicks the button
+  };
+
   // Query text change handler
   const onQueryChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
-    onChange({ 
+    const newQuery = event.target.value;
+    
+    // Clear cached tool call if query text has changed (to trigger new LLM generation)
+    const updatedQuery = { 
       ...currentQuery, 
-      query: event.target.value 
-    });
+      query: newQuery
+    };
+    
+    if (currentQuery.generatedToolCall && currentQuery.generatedToolCall.originalQuery !== newQuery) {
+      updatedQuery.generatedToolCall = undefined;
+    }
+    
+    onChange(updatedQuery);
   };
 
   // Tool selection change handler
@@ -123,6 +163,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       query: '',
       toolName: undefined,
       arguments: undefined,
+      generatedToolCall: undefined, // Clear cached tool call when clearing query
     });
   };
 
@@ -202,7 +243,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
                     name="sync"
                     size="md"
                     tooltip="Refresh available tools"
-                    onClick={loadAvailableTools}
+                    onClick={handleRefreshTools}
                     disabled={isLoadingTools}
                   />
                 </HorizontalGroup>
@@ -216,6 +257,11 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
               ) : !isLoadingTools ? (
                 <Badge color="orange" text="No tools loaded" />
               ) : null}
+
+              {/* Recently updated indicator */}
+              {recentlyUpdated && (
+                <Badge color="purple" text="Tool call generated!" />
+              )}
 
               <Button 
                 variant="secondary" 
@@ -287,6 +333,25 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
               </p>
             </Alert>
           )}
+
+          {currentQuery.generatedToolCall && currentQuery.generatedToolCall.originalQuery === currentQuery.query && (
+            <Alert title="Generated Tool Call" severity="success">
+              <p>
+                Generated tool call: <Badge text={currentQuery.generatedToolCall.toolName} color="green" />
+              </p>
+              <p>
+                This query will execute faster on subsequent runs as it uses the previously generated tool call and arguments.
+              </p>
+              {currentQuery.generatedToolCall.arguments && Object.keys(currentQuery.generatedToolCall.arguments).length > 0 && (
+                <details style={{ marginTop: '8px' }}>
+                  <summary style={{ cursor: 'pointer', fontSize: '12px' }}>View generated arguments</summary>
+                  <pre style={{ fontSize: '11px', marginTop: '4px', padding: '8px', backgroundColor: '#f5f5f5', borderRadius: '4px' }}>
+                    {JSON.stringify(currentQuery.generatedToolCall.arguments, null, 2)}
+                  </pre>
+                </details>
+              )}
+            </Alert>
+          )}
         </Card>
       )}
 
@@ -298,7 +363,7 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
         <Button 
           variant="secondary" 
           size="sm"
-          onClick={loadAvailableTools}
+          onClick={handleRefreshTools}
           icon="sync"
           disabled={isLoadingTools}
         >

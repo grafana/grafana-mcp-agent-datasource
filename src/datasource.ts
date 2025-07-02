@@ -8,6 +8,8 @@ import {
   LoadingState
 } from '@grafana/data';
 import { DataSourceWithBackend, getTemplateSrv, getBackendSrv } from '@grafana/runtime';
+import { map } from 'rxjs/operators';
+import { Subject, Observable } from 'rxjs';
 
 import { 
   MCPQuery, 
@@ -17,12 +19,30 @@ import {
   MCPConnectionStatus
 } from './types';
 
+export interface QueryUpdateEvent {
+  refId: string;
+  originalQuery: MCPQuery;
+  generatedToolCall?: {
+    toolName: string;
+    arguments: Record<string, any>;
+    originalQuery: string;
+  };
+}
+
 export class DataSource extends DataSourceWithBackend<MCPQuery, MCPDataSourceOptions> {
   url?: string;
+  private queryUpdatesSubject = new Subject<QueryUpdateEvent>();
 
   constructor(instanceSettings: DataSourceInstanceSettings<MCPDataSourceOptions>) {
     super(instanceSettings);
     this.url = instanceSettings.url;
+  }
+
+  /**
+   * Observable that emits when queries are executed and tool calls are generated
+   */
+  get queryUpdates$(): Observable<QueryUpdateEvent> {
+    return this.queryUpdatesSubject.asObservable();
   }
 
   getDefaultQuery(_: CoreApp): Partial<MCPQuery> {
@@ -57,8 +77,43 @@ export class DataSource extends DataSourceWithBackend<MCPQuery, MCPDataSourceOpt
       })),
     };
 
-    // Call the backend through the parent class
-    return super.query(processedRequest);
+    // Call the backend through the parent class and process the response
+    return super.query(processedRequest).pipe(
+      map((response: DataQueryResponse) => {
+        // Process each data frame to extract generated tool calls from metadata
+        if (response.data) {
+          response.data.forEach((frame, index) => {
+            const customMeta = frame.meta?.custom;
+            if (customMeta && customMeta.generated_tool_call) {
+              // Extract the generated tool call from the response metadata
+              const generatedToolCall = customMeta.generated_tool_call;
+              
+              // Update the corresponding target with the generated tool call
+              // This allows Grafana to persist it as part of the query configuration
+              if (processedRequest.targets[index]) {
+                const originalQuery = processedRequest.targets[index];
+                const updatedGeneratedToolCall = {
+                  toolName: generatedToolCall.toolName,
+                  arguments: generatedToolCall.arguments,
+                  originalQuery: generatedToolCall.originalQuery,
+                };
+                
+                processedRequest.targets[index].generatedToolCall = updatedGeneratedToolCall;
+                
+                // Emit query update event for subscribers (like QueryEditor)
+                this.queryUpdatesSubject.next({
+                  refId: originalQuery.refId,
+                  originalQuery: originalQuery,
+                  generatedToolCall: updatedGeneratedToolCall,
+                });
+              }
+            }
+          });
+        }
+        
+        return response;
+      })
+    );
   }
 
   /**
@@ -82,9 +137,10 @@ export class DataSource extends DataSourceWithBackend<MCPQuery, MCPDataSourceOpt
   /**
    * Get available MCP tools from the server
    */
-  async getAvailableTools(): Promise<MCPTool[]> {
+  async getAvailableTools(forceRefresh = false): Promise<MCPTool[]> {
     try {
-      const response = await this.getResource('tools');
+      const path = forceRefresh ? 'tools?refresh=true' : 'tools';
+      const response = await this.getResource(path);
       return response.tools || [];
     } catch (error) {
       console.error('Failed to get available tools:', error);
@@ -234,5 +290,12 @@ export class DataSource extends DataSourceWithBackend<MCPQuery, MCPDataSourceOpt
   async postResource(path: string, data: any): Promise<any> {
     const url = `api/datasources/${this.id}/resources/${path}`;
     return getBackendSrv().post(url, data);
+  }
+
+  /**
+   * Clean up resources when datasource is destroyed
+   */
+  dispose() {
+    this.queryUpdatesSubject.complete();
   }
 }

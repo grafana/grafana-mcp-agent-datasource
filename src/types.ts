@@ -11,6 +11,13 @@ export interface MCPQuery extends DataQuery {
   maxResults?: number;                  // Maximum number of results to return
   format?: string;                      // Output format preference
   useDashboardTimeRange?: boolean;      // Whether to include dashboard time range in queries
+  
+  // Generated tool call (stored to avoid LLM calls on dashboard refresh)
+  generatedToolCall?: {
+    toolName: string;
+    arguments: Record<string, any>;
+    originalQuery: string;              // Original query text that generated this tool call
+  };
 }
 
 export const DEFAULT_QUERY: Partial<MCPQuery> = {
