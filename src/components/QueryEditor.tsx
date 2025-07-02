@@ -20,9 +20,7 @@ import { DataSource } from '../datasource';
 import { 
   MCPDataSourceOptions, 
   MCPQuery, 
-  MCPTool, 
-  DEFAULT_QUERY_TEMPLATES, 
-  MCPQueryTemplate 
+  MCPTool,
 } from '../types';
 
 type Props = QueryEditorProps<DataSource, MCPQuery, MCPDataSourceOptions>;
@@ -32,7 +30,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
   const [isLoadingTools, setIsLoadingTools] = useState(false);
   const [toolsError, setToolsError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [showTemplates, setShowTemplates] = useState(false);
 
   // Initialize query with defaults if needed
   const currentQuery: MCPQuery = {
@@ -117,17 +114,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
       return;
     }
     onRunQuery();
-  };
-
-  // Template selection handler
-  const onTemplateSelect = (template: MCPQueryTemplate) => {
-    onChange({
-      ...currentQuery,
-      query: template.query,
-      toolName: template.toolName,
-      arguments: template.arguments,
-    });
-    setShowTemplates(false);
   };
 
   // Clear query handler
@@ -234,15 +220,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
               <Button 
                 variant="secondary" 
                 size="sm"
-                onClick={() => setShowTemplates(!showTemplates)}
-                icon="book"
-              >
-                Templates
-              </Button>
-
-              <Button 
-                variant="secondary" 
-                size="sm"
                 onClick={() => setShowAdvanced(!showAdvanced)}
                 icon="cog"
               >
@@ -251,39 +228,6 @@ export function QueryEditor({ query, onChange, onRunQuery, datasource }: Props) 
             </HorizontalGroup>
           </Stack>
       </Card>
-
-      {/* Query Templates */}
-      {showTemplates && (
-        <Card>
-          <Card.Heading>Query Templates</Card.Heading>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '12px' }}>
-            {DEFAULT_QUERY_TEMPLATES.map((template, index) => (
-              <div 
-                key={index}
-                style={{ 
-                  border: '1px solid #e1e5e9', 
-                  borderRadius: '4px', 
-                  padding: '12px',
-                  cursor: 'pointer',
-                  backgroundColor: '#f7f8fa'
-                }}
-                onClick={() => onTemplateSelect(template)}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '8px' }}>
-                  <strong>{template.name}</strong>
-                  {template.category && <Badge text={template.category} color="blue" />}
-                </div>
-                <div style={{ fontSize: '12px', color: '#6c7680', marginBottom: '8px' }}>
-                  {template.description}
-                </div>
-                <div style={{ fontFamily: 'monospace', fontSize: '11px', color: '#2e3338' }}>
-                  {template.query}
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
 
       {/* Advanced Options */}
       {showAdvanced && (
