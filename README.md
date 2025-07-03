@@ -1,4 +1,4 @@
-# Grafana MCP Client DataSource Plugin
+# Grafana MCP Agent DataSource Plugin
 
 A Grafana data source plugin that connects to [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers and enables natural language querying of external tools and data sources.
 
