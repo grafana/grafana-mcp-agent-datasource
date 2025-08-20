@@ -1,3 +1,7 @@
+| :warning: Info           |
+|:----------------------------|
+| This experiment has been archived, we merged this effort with [Grafana MCP](https://github.com/grafana/mcp-grafana), please use that. |
+
 # Grafana MCP Agent DataSource Plugin
 
 A Grafana data source plugin that connects to [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) servers and enables natural language querying of external tools and data sources.
